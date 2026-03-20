@@ -35,10 +35,10 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">🎬</div>
+          <img src="/icon.png" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
-            <div className="sidebar-logo-sub">Workflow Studio</div>
+            <div className="sidebar-logo-sub">Workflow Recorder</div>
           </div>
         </div>
 

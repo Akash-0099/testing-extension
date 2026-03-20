@@ -50,8 +50,8 @@ export default function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-logo">🎬</div>
-        <div className="login-title">QA Dashboard</div>
+        <img src="/icon.png" alt="Logo" className="login-logo-img" />
+        <div className="login-title">Workflow Recorder</div>
         <div className="login-sub">
           {tab === 'signin' ? 'Sign in to view and compare your recorded workflows' : 'Create your account to get started'}
         </div>
