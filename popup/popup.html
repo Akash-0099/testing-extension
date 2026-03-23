@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workflow Recorder</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-logo">
+      <img src="../icons/icon48.png" alt="Logo" class="header-icon" />
+      <div>
+        <div class="header-title">Workflow Recorder</div>
+        <div class="header-subtitle">Record &amp; replay workflows</div>
+      </div>
+    </div>
+    <div class="status-badge" id="statusBadge">Idle</div>
+  </header>
+
+  <!-- ─── IDLE MODE ─────────────────────────────────────────────── -->
+  <section class="panel" id="panelIdle">
+
+    <!-- Primary actions -->
+    <div class="card">
+      <div class="card-label">New Recording</div>
+      <div class="row-gap">
+        <input
+          type="text"
+          id="workflowName"
+          class="input"
+          placeholder="Workflow name (optional)"
+          maxlength="60"
+        />
+        <button class="btn btn-record" id="btnRecord">
+          <span class="btn-icon">⏺</span> Start Recording
+        </button>
+      </div>
+    </div>
+
+    <!-- Load & play — tabbed -->
+    <div class="card">
+      <div class="card-label">Load &amp; Play Workflow</div>
+
+      <!-- Source tabs -->
+      <div class="load-tabs">
+        <button class="load-tab active" id="tabFromFile">📂 From File</button>
+        <button class="load-tab" id="tabFromDashboard">☁️ From Dashboard</button>
+      </div>
+
+      <!-- From File panel -->
+      <div id="paneFromFile" class="load-pane">
+        <label class="btn btn-secondary btn-full" id="btnLoadLabel">
+          <span class="btn-icon">📂</span> Load Workflow JSON
+          <input type="file" id="fileInput" accept=".json" style="display:none" />
+        </label>
+      </div>
+
+      <!-- From Dashboard panel -->
+      <div id="paneFromDashboard" class="load-pane hidden">
+        <div class="db-load-row">
+          <select id="workflowSelect" class="db-select">
+            <option value="">— Select a workflow —</option>
+          </select>
+          <button class="btn btn-icon-only" id="btnAddQueueDb" disabled title="Add to Queue">➕</button>
+          <button class="btn btn-icon-only" id="btnRefreshWorkflows" title="Refresh list">↺</button>
+        </div>
+        <div id="dbLoadStatus" class="db-status"></div>
+      </div>
+
+      <!-- Queue List -->
+      <div id="queueContainer" class="queue-container hidden">
+        <div class="queue-label">Playback Queue (<span id="queueCount">0</span>)</div>
+        <div id="queueList" class="queue-list"></div>
+      </div>
+
+      <button class="btn btn-play" id="btnPlay" disabled>
+        <span class="btn-icon">▶</span> Play Queue
+      </button>
+    </div>
+
+    <!-- Dashboard link -->
+    <div class="card">
+      <div class="card-label">Dashboard</div>
+      <button class="btn btn-secondary btn-full" id="btnOpenDashboard">
+        <span class="btn-icon">📊</span> Open Dashboard
+      </button>
+    </div>
+
+    <!-- Dashboard hint -->
+    <p class="hint">Recordings are automatically saved to the <em>Dashboard</em> ↗</p>
+  </section>
+
+
+  <!-- ─── RECORDING MODE ────────────────────────────────────────── -->
+  <section class="panel hidden" id="panelRecording">
+
+    <div class="rec-hero">
+      <div class="rec-pulse-ring"></div>
+      <div class="rec-dot"></div>
+      <span class="rec-label">Recording…</span>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-box">
+        <div class="stat-value" id="recEventCount">0</div>
+        <div class="stat-label">Events</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="recCheckpointCount">0</div>
+        <div class="stat-label">Checkpoints</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="recDuration">0s</div>
+        <div class="stat-label">Duration</div>
+      </div>
+    </div>
+
+    <!-- Checkpoint controls -->
+    <div class="card">
+      <div class="card-label">Add Checkpoint</div>
+      <div class="row-gap">
+        <input
+          type="text"
+          id="checkpointLabel"
+          class="input"
+          placeholder="Checkpoint label (optional)"
+        />
+        <button class="btn btn-checkpoint" id="btnCheckpoint">
+          <span class="btn-icon">📸</span> Take Screenshot Checkpoint
+        </button>
+      </div>
+    </div>
+
+    <!-- Checkpoint thumbnails -->
+    <div id="checkpointThumbsRec" class="thumb-strip"></div>
+
+    <button class="btn btn-stop" id="btnStopRecording">
+      <span class="btn-icon">⏹</span> Stop &amp; Save Recording
+    </button>
+  </section>
+
+  <!-- ─── PLAYING MODE ──────────────────────────────────────────── -->
+  <section class="panel hidden" id="panelPlaying">
+
+    <div class="play-hero">
+      <div class="play-spinner"></div>
+      <span class="play-label">Playing Workflow</span>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="playProgressBar"></div>
+      </div>
+      <div class="progress-text" id="playProgressText">0 / 0</div>
+    </div>
+
+    <div class="play-event-label" id="playCurrentEvent">Initialising…</div>
+
+    <!-- Checkpoint thumbnails captured during playback -->
+    <div class="card">
+      <div class="card-label">Captured Checkpoints</div>
+      <div id="checkpointThumbsPlay" class="thumb-strip"></div>
+      <div id="noCheckpointsYet" class="hint" style="margin-top:4px;">Screenshots will appear here.</div>
+    </div>
+
+    <button class="btn btn-stop" id="btnStopPlayback">
+      <span class="btn-icon">⏹</span> Stop Playback
+    </button>
+  </section>
+
+  <!-- ─── EXPORT COMPLETE TOAST ─────────────────────────────────── -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

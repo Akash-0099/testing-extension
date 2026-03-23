@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model Workflow {
+  id           String    @id @default(uuid())
+  name         String
+  recordedAt   DateTime  @default(now()) @map("recorded_at")
+  events       Json
+  userId       String?   @map("user_id")
+  screenshots  RecordingScreenshot[]
+  runs         PlaybackRun[]
+
+  @@map("workflows")
+}
+
+model RecordingScreenshot {
+  id           String    @id @default(uuid())
+  workflowId   String    @map("workflow_id")
+  index        Int
+  label        String?
+  url          String?
+  dataUrl      String    @map("data_url") @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at")
+  workflow     Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@map("recording_screenshots")
+}
+
+model PlaybackRun {
+  id           String    @id @default(uuid())
+  workflowId   String    @map("workflow_id")
+  playedAt     DateTime  @default(now()) @map("played_at")
+  userId       String?   @map("user_id")
+  workflow     Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  checkpoints  PlaybackCheckpoint[]
+
+  @@map("playback_runs")
+}
+
+model PlaybackCheckpoint {
+  id           String      @id @default(uuid())
+  runId        String      @map("run_id")
+  index        Int
+  label        String?
+  dataUrl      String      @map("data_url") @db.Text
+  createdAt    DateTime    @default(now()) @map("created_at")
+  run          PlaybackRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("playback_checkpoints")
+}
