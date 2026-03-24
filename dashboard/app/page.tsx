@@ -4,6 +4,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import HomeClient from './HomeClient'
 
+/** Server page: requires session, loads workflows and aggregate stats for `HomeClient`. */
 export default async function HomePage() {
   const session = await getSession()
   if (!session) redirect('/login')

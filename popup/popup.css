@@ -558,3 +558,163 @@ body {
 }
 .db-status.error { color: var(--red); }
 
+/* ─── Console / Network Checkpoint Buttons ──────────────────────────────────── */
+
+.btn-console-cp {
+  background: rgba(99,102,241,0.12);
+  color: var(--accent-hover);
+  border: 1px solid rgba(99,102,241,0.25);
+}
+.btn-console-cp:hover:not(:disabled) {
+  background: rgba(99,102,241,0.22);
+}
+
+.btn-network-cp {
+  background: rgba(56,189,248,0.10);
+  color: #7dd3fc;
+  border: 1px solid rgba(56,189,248,0.22);
+}
+.btn-network-cp:hover:not(:disabled) {
+  background: rgba(56,189,248,0.20);
+}
+
+/* ─── Checkpoint Selection Dialog ───────────────────────────────────────────── */
+
+.cp-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cp-dialog.hidden { display: none !important; }
+
+.cp-dialog-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.cp-dialog-box {
+  position: relative;
+  z-index: 1;
+  width: 310px;
+  max-height: 420px;
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+
+.cp-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cp-dialog-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.1px;
+}
+
+.cp-dialog-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color var(--transition), background var(--transition);
+}
+.cp-dialog-close:hover { color: var(--text); background: var(--bg3); }
+
+.cp-dialog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+  min-height: 60px;
+}
+
+.cp-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.cp-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 16px 12px;
+}
+
+.cp-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition);
+}
+.cp-item:last-child { border-bottom: none; }
+.cp-item:hover { background: var(--bg3); }
+.cp-item.selected {
+  background: rgba(99,102,241,0.14);
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+
+.cp-item-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.cp-item-badge--log    { background: rgba(99,102,241,0.18); color: var(--accent-hover); }
+.cp-item-badge--method { background: rgba(56,189,248,0.15); color: #7dd3fc; }
+.cp-item-badge--ok     { background: rgba(34,197,94,0.14);  color: var(--green); }
+.cp-item-badge--warn   { background: rgba(250,204,21,0.14); color: var(--yellow); }
+.cp-item-badge--error  { background: rgba(239,68,68,0.14);  color: var(--red); }
+
+.cp-item-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.cp-item-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.cp-dialog-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+

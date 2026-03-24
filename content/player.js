@@ -103,7 +103,7 @@
       // ─── Stop button ─────────────────────────────────────────
       const stopBtn = document.createElement("button");
       stopBtn.id = "__wf_stop_btn__";
-      stopBtn.textContent = "⏹ Stop Workflow";
+      stopBtn.textContent = "Stop Workflow";
       stopBtn.style.cssText = `
         display:block;width:100%;
         padding:6px 0;border:none;border-radius:6px;
@@ -149,7 +149,11 @@
   }
 
   /**
-   * Displays the Failure HUD and auto-removes it after 4 seconds.
+   * Switches the HUD to a failure state and removes it after a short delay.
+   *
+   * Strategy:
+   * Reuses the existing HUD nodes, recolors title and progress styling, drops the stop
+   * button, sets the step text to `reason`, and schedules `hideHUD` after 4 seconds.
    */
   function showFailureHUD(reason) {
     let hud = document.getElementById(HUD_ID);
@@ -237,7 +241,7 @@
       gap: 8px;
       animation: __wf_flash__ 1.2s ease-out forwards;
     `;
-    badge.innerHTML = `<span style="color:#facc15;font-size:16px;">📸</span> ${label || "Checkpoint"}`;
+    badge.innerHTML = `<span style="color:#facc15;font-size:16px;font-weight:700;">CP</span> ${label || "Checkpoint"}`;
     document.body.appendChild(badge);
     setTimeout(() => badge.remove(), 1200);
   }

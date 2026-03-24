@@ -33,10 +33,12 @@ interface Run {
   }
 }
 
+/** Side-by-side recording vs playback screenshots for one run, with checkpoint navigation. */
 export default function ComparisonClient({ run, workflowId }: { run: Run; workflowId: string }) {
   const router = useRouter()
   const [activeIndex, setActiveIndex] = useState(0)
 
+  /** Formats `playedAt` / `recordedAt` labels (en-US). */
   function fmtDate(iso: string) {
     return new Date(iso).toLocaleString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric',
@@ -59,20 +61,23 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">🎬</div>
+          <div className="sidebar-logo-icon" aria-hidden="true" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
             <div className="sidebar-logo-sub">Workflow Studio</div>
           </div>
         </div>
         <a href="/" className="nav-item">
-          <span className="nav-icon">📋</span>All Workflows
+          <span className="nav-icon" aria-hidden="true" />
+          All Workflows
         </a>
         <div className="nav-item" onClick={() => router.push(`/workflows/${workflowId}`)} style={{ cursor: 'pointer' }}>
-          <span className="nav-icon">🔍</span>Workflow Detail
+          <span className="nav-icon" aria-hidden="true" />
+          Workflow Detail
         </div>
         <div className="nav-item active">
-          <span className="nav-icon">⚖️</span>Comparison
+          <span className="nav-icon" aria-hidden="true" />
+          Comparison
         </div>
 
         {/* Checkpoint selector */}
@@ -87,7 +92,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
             className={`nav-item ${i === activeIndex ? 'active' : ''}`}
             onClick={() => setActiveIndex(i)}
           >
-            <span className="nav-icon">{pair.recording ? '✅' : '⚠️'}</span>
+            <span className="nav-icon" aria-hidden="true">{pair.recording ? 'OK' : '!'}</span>
             {pair.checkpoint.label || `CP ${i + 1}`}
           </button>
         ))}
@@ -121,7 +126,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
               alignItems: 'flex-start',
               gap: 12,
             }}>
-              <span style={{ fontSize: 18 }}>❌</span>
+              <span style={{ fontSize: 18 }} aria-hidden="true">!</span>
               <div>
                 <div style={{ fontWeight: 600, color: '#ef4444', marginBottom: 4 }}>
                   Test Failed — Step {(run.failedEventIndex ?? 0) + 1}
@@ -140,7 +145,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
           )}
           {pairs.length === 0 ? (
             <div className="empty-state">
-              <div className="empty-icon">🖼️</div>
+              <div className="empty-icon" aria-hidden="true" />
               <div className="empty-title">No checkpoints in this run</div>
               <div className="empty-desc">This playback run did not capture any checkpoint screenshots.</div>
             </div>
@@ -161,7 +166,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                       border: `1px solid ${i === activeIndex ? 'var(--accent)' : 'var(--border)'}`,
                     }}
                   >
-                    {pair.recording ? '✅' : '⚠️'} {pair.checkpoint.label || `CP ${i + 1}`}
+                    {pair.recording ? 'OK' : '!'} {pair.checkpoint.label || `CP ${i + 1}`}
                   </button>
                 ))}
               </div>
@@ -171,7 +176,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 {/* Left: Recording (baseline) */}
                 <div className="compare-panel">
                   <div className="compare-panel-header">
-                    <span>📸 Recording Baseline</span>
+                    <span>Recording Baseline</span>
                     <span className="badge badge-purple">{active.recording?.label || `CP ${activeIndex + 1}`}</span>
                   </div>
                   {active.recording ? (
@@ -182,7 +187,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                     />
                   ) : (
                     <div className="empty-state" style={{ padding: 40, background: 'var(--bg3)' }}>
-                      <div className="empty-icon">🚫</div>
+                      <div className="empty-icon" aria-hidden="true" />
                       <div className="empty-title">No baseline screenshot</div>
                       <div className="empty-desc">No recording screenshot found for this checkpoint index.</div>
                     </div>
@@ -195,7 +200,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 {/* Right: Playback (current) */}
                 <div className="compare-panel">
                   <div className="compare-panel-header">
-                    <span>▶ Playback Result</span>
+                    <span>Playback Result</span>
                     <span className="badge badge-green">{active.checkpoint.label || `CP ${activeIndex + 1}`}</span>
                   </div>
                   <img

@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: 'Record, replay, and compare workflow checkpoints',
 }
 
+/** Root HTML shell; loads global styles only. */
 export default function RootLayout({
   children,
 }: Readonly<{

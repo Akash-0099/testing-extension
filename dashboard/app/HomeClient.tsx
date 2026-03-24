@@ -15,14 +15,17 @@ interface Props {
   userEmail: string
 }
 
+/** Logged-in home: workflow list, stats, and sidebar navigation. */
 export default function HomeClient({ workflows, stats, userEmail }: Props) {
   const router = useRouter()
 
+  /** Ends the session via the logout API and sends the user to `/login`. */
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' })
     router.push('/login')
   }
 
+  /** Formats an ISO timestamp for list cards using the en-US locale. */
   function fmtDate(iso: string) {
     return new Date(iso).toLocaleString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric',
@@ -43,7 +46,8 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
         </div>
 
         <a href="/" className="nav-item active">
-          <span className="nav-icon">📋</span>Workflows
+          <span className="nav-icon" aria-hidden="true" />
+          Workflows
         </a>
 
         <div style={{ flex: 1 }} />
@@ -86,7 +90,7 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
           {/* Workflow list */}
           {workflows.length === 0 ? (
             <div className="empty-state">
-              <div className="empty-icon">📭</div>
+              <div className="empty-icon" aria-hidden="true" />
               <div className="empty-title">No workflows yet</div>
               <div className="empty-desc">
                 Record a workflow in the Chrome extension and it will appear here automatically.
@@ -103,8 +107,8 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
                 >
                   <div className="workflow-card-title">{w.name}</div>
                   <div className="workflow-card-meta">
-                    <span className="badge badge-purple">📸 {w._count.screenshots} checkpoints</span>
-                    <span className="badge badge-green">▶ {w._count.runs} runs</span>
+                    <span className="badge badge-purple">{w._count.screenshots} checkpoints</span>
+                    <span className="badge badge-green">{w._count.runs} runs</span>
                   </div>
                   <div className="workflow-card-date">Recorded {fmtDate(w.recordedAt)}</div>
                 </div>

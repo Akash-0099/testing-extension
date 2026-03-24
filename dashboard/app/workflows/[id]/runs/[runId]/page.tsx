@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import ComparisonClient from './ComparisonClient'
 
+/** Server page: loads a playback run with checkpoints and baseline screenshots. */
 export default async function ComparisonPage({
   params,
 }: {

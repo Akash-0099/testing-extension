@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import WorkflowDetailClient from './WorkflowDetailClient'
 
+/** Server page: loads one workflow with screenshots and runs, or redirects. */
 export default async function WorkflowDetailPage({
   params,
 }: {

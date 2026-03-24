@@ -572,4 +572,42 @@
     });
   } catch (e) {}
 
+  /**
+   * MAIN-world → ISOLATED-world bridge
+   *
+   * Strategy:
+   * `page-interceptor.js` runs in the page's MAIN JavaScript context and posts
+   * structured messages via `window.postMessage`. This listener, running in the
+   * ISOLATED world, picks them up and forwards them to the service worker only
+   * while recording is active. The sentinel `__wfSrc: '__wf_interceptor__'`
+   * prevents cross-talk with unrelated postMessage traffic on the page.
+   */
+  window.addEventListener("message", (e) => {
+    if (!isRecording) return;
+    if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
+
+    try {
+      if (e.data.type === "console_log") {
+        chrome.runtime.sendMessage({
+          type: "RECORD_CONSOLE_LOG",
+          log: {
+            message: e.data.message,
+            timestamp: e.data.timestamp,
+            url: window.location.href,
+          },
+        });
+      } else if (e.data.type === "network_call") {
+        chrome.runtime.sendMessage({
+          type: "RECORD_NETWORK_CALL",
+          call: {
+            url: e.data.url,
+            method: e.data.method,
+            status: e.data.status,
+            timestamp: e.data.timestamp,
+          },
+        });
+      }
+    } catch (_) {}
+  });
+
 })();

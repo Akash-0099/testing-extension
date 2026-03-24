@@ -61,10 +61,30 @@ const recCheckpointCount = document.getElementById("recCheckpointCount");
 const recDuration       = document.getElementById("recDuration");
 const checkpointLabel   = document.getElementById("checkpointLabel");
 const btnCheckpoint     = document.getElementById("btnCheckpoint");
+const btnConsoleCheckpoint = document.getElementById("btnConsoleCheckpoint");
+const btnNetworkCheckpoint = document.getElementById("btnNetworkCheckpoint");
 const btnStopRecording  = document.getElementById("btnStopRecording");
 const btnRestartRecording = document.getElementById("btnRestartRecording");
 const btnDiscardRecording = document.getElementById("btnDiscardRecording");
 const checkpointThumbsRec = document.getElementById("checkpointThumbsRec");
+
+// Console Log Dialog
+const consoleLogDialog      = document.getElementById("consoleLogDialog");
+const consoleLogOverlay     = document.getElementById("consoleLogOverlay");
+const consoleLogDialogClose = document.getElementById("consoleLogDialogClose");
+const consoleLogList        = document.getElementById("consoleLogList");
+const consoleLogEmpty       = document.getElementById("consoleLogEmpty");
+const consoleCheckpointLabel = document.getElementById("consoleCheckpointLabel");
+const btnAddConsoleCheckpoint = document.getElementById("btnAddConsoleCheckpoint");
+
+// Network Call Dialog
+const networkCallDialog      = document.getElementById("networkCallDialog");
+const networkCallOverlay     = document.getElementById("networkCallOverlay");
+const networkCallDialogClose = document.getElementById("networkCallDialogClose");
+const networkCallList        = document.getElementById("networkCallList");
+const networkCallEmpty       = document.getElementById("networkCallEmpty");
+const networkCheckpointLabel = document.getElementById("networkCheckpointLabel");
+const btnAddNetworkCheckpoint = document.getElementById("btnAddNetworkCheckpoint");
 
 // Playing
 const playProgressBar   = document.getElementById("playProgressBar");
@@ -88,6 +108,12 @@ let playScreenshots     = {};     // currently playing workflow's screenshots
 
 // ─── Init: sync state from service worker ────────────────────────────────────
 
+/**
+ * Aligns the popup UI with the service worker mode on load.
+ *
+ * Strategy:
+ * Sends `GET_STATE`, then calls `showPanel` and starts the duration timer when recording.
+ */
 async function init() {
   const res = await sendToSW({ type: "GET_STATE" });
   if (!res) return;
@@ -107,6 +133,12 @@ init();
 
 // ─── Panel switching ──────────────────────────────────────────────────────────
 
+/**
+ * Shows one of idle / recording / playing panels and updates the status badge.
+ *
+ * Strategy:
+ * Toggles `hidden` on the three panel roots and applies badge text plus CSS class.
+ */
 function showPanel(mode) {
   panelIdle.classList.toggle("hidden", mode !== "idle");
   panelRecording.classList.toggle("hidden", mode !== "recording");
@@ -139,6 +171,12 @@ btnRecord.addEventListener("click", async () => {
   }
 });
 
+/**
+ * Updates the recording duration label every second while recording.
+ *
+ * Strategy:
+ * Uses `setInterval` from `recordingStartTime` to format minutes and seconds on the DOM.
+ */
 function startDurationTimer() {
   if (!recordingStartTime) recordingStartTime = Date.now();
   clearInterval(durationTimer);
@@ -164,6 +202,163 @@ btnCheckpoint.addEventListener("click", async () => {
   }
 });
 
+// ─── Console Log Checkpoint dialog ────────────────────────────────────────────
+
+let selectedConsoleLog = null;
+
+btnConsoleCheckpoint.addEventListener("click", async () => {
+  selectedConsoleLog = null;
+  btnAddConsoleCheckpoint.disabled = true;
+  consoleCheckpointLabel.value = "";
+
+  const res = await sendToSW({ type: "GET_CONSOLE_LOGS" });
+  const logs = res?.logs ?? [];
+
+  // Clear previous items (keep empty placeholder)
+  while (consoleLogList.firstChild) consoleLogList.removeChild(consoleLogList.firstChild);
+  consoleLogList.appendChild(consoleLogEmpty);
+
+  if (logs.length === 0) {
+    consoleLogEmpty.style.display = "";
+  } else {
+    consoleLogEmpty.style.display = "none";
+    logs.forEach((log, i) => {
+      const item = document.createElement("div");
+      item.className = "cp-item";
+      item.dataset.index = i;
+
+      const time = new Date(log.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const msgTrunc = log.message.length > 80 ? log.message.slice(0, 78) + "…" : log.message;
+
+      item.innerHTML = `<span class="cp-item-badge cp-item-badge--log">LOG</span>
+        <span class="cp-item-text">${escapeHtml(msgTrunc)}</span>
+        <span class="cp-item-time">${time}</span>`;
+
+      item.addEventListener("click", () => {
+        document.querySelectorAll("#consoleLogList .cp-item").forEach(el => el.classList.remove("selected"));
+        item.classList.add("selected");
+        selectedConsoleLog = log;
+        btnAddConsoleCheckpoint.disabled = false;
+      });
+
+      consoleLogList.appendChild(item);
+    });
+  }
+
+  consoleLogDialog.classList.remove("hidden");
+});
+
+consoleLogDialogClose.addEventListener("click", () => consoleLogDialog.classList.add("hidden"));
+consoleLogOverlay.addEventListener("click", () => consoleLogDialog.classList.add("hidden"));
+
+btnAddConsoleCheckpoint.addEventListener("click", async () => {
+  if (!selectedConsoleLog) return;
+  const label = consoleCheckpointLabel.value.trim() || null;
+  btnAddConsoleCheckpoint.disabled = true;
+
+  const res = await sendToSW({
+    type: "ADD_CONSOLE_CHECKPOINT",
+    logMessage: selectedConsoleLog.message,
+    label,
+  });
+
+  if (res?.ok) {
+    consoleLogDialog.classList.add("hidden");
+    showToast("Console checkpoint added", "success");
+  } else {
+    showToast("Failed: " + (res?.error ?? "unknown"), "error");
+    btnAddConsoleCheckpoint.disabled = false;
+  }
+});
+
+// ─── Network Call Checkpoint dialog ───────────────────────────────────────────
+
+let selectedNetworkCall = null;
+
+btnNetworkCheckpoint.addEventListener("click", async () => {
+  selectedNetworkCall = null;
+  btnAddNetworkCheckpoint.disabled = true;
+  networkCheckpointLabel.value = "";
+
+  const res = await sendToSW({ type: "GET_NETWORK_CALLS" });
+  const calls = res?.calls ?? [];
+
+  while (networkCallList.firstChild) networkCallList.removeChild(networkCallList.firstChild);
+  networkCallList.appendChild(networkCallEmpty);
+
+  if (calls.length === 0) {
+    networkCallEmpty.style.display = "";
+  } else {
+    networkCallEmpty.style.display = "none";
+    calls.forEach((call, i) => {
+      const item = document.createElement("div");
+      item.className = "cp-item";
+      item.dataset.index = i;
+
+      const time = new Date(call.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const urlTrunc = call.url.length > 55 ? "…" + call.url.slice(-54) : call.url;
+      const statusClass = call.status >= 400 ? "cp-item-badge--error" : call.status >= 300 ? "cp-item-badge--warn" : "cp-item-badge--ok";
+
+      item.innerHTML = `<span class="cp-item-badge cp-item-badge--method">${escapeHtml(call.method)}</span>
+        <span class="cp-item-text">${escapeHtml(urlTrunc)}</span>
+        <span class="cp-item-badge ${statusClass}">${call.status}</span>
+        <span class="cp-item-time">${time}</span>`;
+
+      item.addEventListener("click", () => {
+        document.querySelectorAll("#networkCallList .cp-item").forEach(el => el.classList.remove("selected"));
+        item.classList.add("selected");
+        selectedNetworkCall = call;
+        btnAddNetworkCheckpoint.disabled = false;
+      });
+
+      networkCallList.appendChild(item);
+    });
+  }
+
+  networkCallDialog.classList.remove("hidden");
+});
+
+networkCallDialogClose.addEventListener("click", () => networkCallDialog.classList.add("hidden"));
+networkCallOverlay.addEventListener("click", () => networkCallDialog.classList.add("hidden"));
+
+btnAddNetworkCheckpoint.addEventListener("click", async () => {
+  if (!selectedNetworkCall) return;
+  const label = networkCheckpointLabel.value.trim() || null;
+  btnAddNetworkCheckpoint.disabled = true;
+
+  const res = await sendToSW({
+    type: "ADD_NETWORK_CHECKPOINT",
+    networkUrl: selectedNetworkCall.url,
+    networkMethod: selectedNetworkCall.method,
+    networkStatus: selectedNetworkCall.status,
+    label,
+  });
+
+  if (res?.ok) {
+    networkCallDialog.classList.add("hidden");
+    showToast("Network checkpoint added", "success");
+  } else {
+    showToast("Failed: " + (res?.error ?? "unknown"), "error");
+    btnAddNetworkCheckpoint.disabled = false;
+  }
+});
+
+// ─── HTML escape helper ────────────────────────────────────────────────────────
+
+/**
+ * Escapes a string for safe insertion into `innerHTML` when building list rows.
+ *
+ * Strategy:
+ * Replaces `&`, `<`, `>`, and `"` with HTML entities.
+ */
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 btnStopRecording.addEventListener("click", async () => {
   clearInterval(durationTimer);
   btnStopRecording.disabled = true;
@@ -177,7 +372,7 @@ btnStopRecording.addEventListener("click", async () => {
   }
 
   // Service worker automatically calls saveToDashboard — just notify the user.
-  showToast("✅ Workflow saved to Dashboard!", "success");
+  showToast("Workflow saved to Dashboard.", "success");
   showPanel("idle");
 });
 
@@ -219,6 +414,13 @@ btnDiscardRecording.addEventListener("click", async () => {
 
 let dashboardWorkflowsFetched = false;
 
+/**
+ * Switches between file-based and dashboard-based workflow loading UI.
+ *
+ * Strategy:
+ * Toggles tab and pane visibility; on first open of the dashboard tab, triggers
+ * `fetchDashboardWorkflows`.
+ */
 function switchLoadTab(tab) {
   const isFile = tab === 'file';
   tabFromFile.classList.toggle('active', isFile);
@@ -234,6 +436,13 @@ function switchLoadTab(tab) {
 tabFromFile.addEventListener('click', () => switchLoadTab('file'));
 tabFromDashboard.addEventListener('click', () => switchLoadTab('dashboard'));
 
+/**
+ * Loads workflow metadata from the dashboard API into the select control.
+ *
+ * Strategy:
+ * GETs `/api/workflows` with the extension header, repopulates options, and surfaces
+ * status text; resets fetch flag on error so retry works.
+ */
 async function fetchDashboardWorkflows() {
   dbLoadStatus.textContent = 'Loading…';
   dbLoadStatus.className = 'db-status';
@@ -323,19 +532,26 @@ btnAddQueueDb.addEventListener('click', async () => {
   }
 });
 
+/**
+ * Renders the playback queue list and enables or disables the Play button.
+ *
+ * Strategy:
+ * Builds DOM rows with remove handlers, toggles queue container visibility, and mirrors
+ * queue length into the Play button label via `innerHTML`.
+ */
 function renderQueue() {
   queueList.innerHTML = '';
   if (workflowQueue.length === 0) {
     queueContainer.classList.add('hidden');
     btnPlay.disabled = true;
-    btnPlay.innerHTML = '<span class="btn-icon">▶</span> Play Queue';
+    btnPlay.innerHTML = '<span class="btn-icon" aria-hidden="true"></span> Play Queue';
     return;
   }
   
   queueContainer.classList.remove('hidden');
   queueCount.textContent = workflowQueue.length;
   btnPlay.disabled = false;
-  btnPlay.innerHTML = `<span class="btn-icon">▶</span> Play Queue (${workflowQueue.length})`;
+  btnPlay.innerHTML = `<span class="btn-icon" aria-hidden="true"></span> Play Queue (${workflowQueue.length})`;
 
   workflowQueue.forEach((wf, i) => {
     const item = document.createElement('div');
@@ -350,7 +566,7 @@ function renderQueue() {
     
     const rmBtn = document.createElement('button');
     rmBtn.className = 'queue-item-remove';
-    rmBtn.textContent = '✖';
+    rmBtn.textContent = 'x';
     rmBtn.onclick = () => {
       workflowQueue.splice(i, 1);
       renderQueue();
@@ -427,16 +643,32 @@ chrome.runtime.onMessage.addListener((msg) => {
       addThumbnail(checkpointThumbsRec, msg.screenshotDataUrl, msg.label, msg.index);
       break;
 
+    case "CONSOLE_CHECKPOINT_ADDED":
+      if (recCheckpointCount) {
+        recCheckpointCount.textContent = parseInt(recCheckpointCount.textContent || "0") + 1;
+      }
+      break;
+
+    case "NETWORK_CHECKPOINT_ADDED":
+      if (recCheckpointCount) {
+        recCheckpointCount.textContent = parseInt(recCheckpointCount.textContent || "0") + 1;
+      }
+      break;
+
     case "PLAYBACK_PROGRESS": {
       const pct = msg.total > 0 ? Math.round((msg.index / msg.total) * 100) : 0;
       playProgressBar.style.width = pct + "%";
       playProgressText.textContent = `${msg.index} / ${msg.total}`;
       const ev = msg.event;
       const evDesc = ev.type === "checkpoint"
-        ? `📸 Checkpoint: ${ev.label}`
-        : ev.type === "tab_switch"
-          ? `🔀 Tab: ${ev.url?.replace(/^https?:\/\//, "").slice(0, 40) ?? ""}`
-          : `${ev.type}${ev.selector ? " → " + ev.selector.slice(0, 35) : ""}`;
+        ? `Screenshot checkpoint: ${ev.label}`
+        : ev.type === "console_checkpoint"
+          ? `Console checkpoint: ${ev.label}`
+          : ev.type === "network_checkpoint"
+            ? `Network checkpoint: ${ev.label}`
+            : ev.type === "tab_switch"
+              ? `Tab: ${ev.url?.replace(/^https?:\/\//, "").slice(0, 40) ?? ""}`
+              : `${ev.type}${ev.selector ? " → " + ev.selector.slice(0, 35) : ""}`;
       playCurrentEvent.textContent = evDesc;
       break;
     }
@@ -448,7 +680,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case "WORKFLOW_PLAYBACK_COMPLETE":
-      showToast(`✅ Completed: ${msg.name}`, "success");
+      showToast(`Completed: ${msg.name}`, "success");
       break;
 
     case "WORKFLOW_PLAYBACK_FAILED": {
@@ -456,7 +688,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       const stepDesc = step
         ? `Step ${step.index + 1} (${step.type}${step.selector ? ": " + step.selector.slice(0, 35) : ""})`
         : "unknown step";
-      showToast(`❌ Failed at ${stepDesc}`, "error");
+      showToast(`Failed at ${stepDesc}`, "error");
       handlePlaybackComplete();
       break;
     }
@@ -475,13 +707,25 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+/**
+ * Returns the UI to idle after a full queue finishes and shows a completion toast.
+ *
+ * Strategy:
+ * Calls `showPanel("idle")` then `showToast` for a neutral success message.
+ */
 function handlePlaybackComplete() {
   showPanel("idle");
-  showToast("✅ Entire queue completed!", "success");
+  showToast("Entire queue completed.", "success");
 }
 
 // ─── Thumbnail helper ─────────────────────────────────────────────────────────
 
+/**
+ * Appends a small screenshot preview with label to a strip container.
+ *
+ * Strategy:
+ * Creates image and caption nodes, wires click to open the data URL in a new window.
+ */
 function addThumbnail(container, dataUrl, label, index) {
   const item = document.createElement("div");
   item.className = "thumb-item";
@@ -517,6 +761,12 @@ btnOpenDashboard.addEventListener("click", () => {
 
 // ─── Utility: send message to service worker ──────────────────────────────────
 
+/**
+ * Promise wrapper around `chrome.runtime.sendMessage` to the service worker.
+ *
+ * Strategy:
+ * Resolves with the callback result or `null` when `lastError` is set or send throws.
+ */
 function sendToSW(msg) {
   return new Promise((resolve) => {
     try {
@@ -539,6 +789,12 @@ function sendToSW(msg) {
 
 let toastTimer = null;
 
+/**
+ * Shows a transient toast message with optional success/error styling.
+ *
+ * Strategy:
+ * Sets text and class on the toast node, clears any prior timer, auto-hides after 3s.
+ */
 function showToast(message, type = "") {
   clearTimeout(toastTimer);
   toast.textContent = message;

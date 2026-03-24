@@ -30,10 +30,12 @@ interface Workflow {
   runs: Run[]
 }
 
+/** Single-workflow studio view: checkpoints, runs, and screenshot lightbox. */
 export default function WorkflowDetailClient({ workflow }: { workflow: Workflow }) {
   const router = useRouter()
   const [selectedImg, setSelectedImg] = useState<Screenshot | null>(null)
 
+  /** Formats timestamps for headers and run rows (en-US). */
   function fmtDate(iso: string) {
     return new Date(iso).toLocaleString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric',
@@ -50,17 +52,19 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">🎬</div>
+          <div className="sidebar-logo-icon" aria-hidden="true" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
             <div className="sidebar-logo-sub">Workflow Studio</div>
           </div>
         </div>
         <a href="/" className="nav-item">
-          <span className="nav-icon">📋</span>All Workflows
+          <span className="nav-icon" aria-hidden="true" />
+          All Workflows
         </a>
         <div className="nav-item active">
-          <span className="nav-icon">🔍</span>Detail View
+          <span className="nav-icon" aria-hidden="true" />
+          Detail View
         </div>
       </nav>
 
@@ -96,10 +100,10 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           </div>
 
           {/* Recording screenshots */}
-          <div className="section-title">📸 Recording Checkpoints</div>
+          <div className="section-title">Recording Checkpoints</div>
           {workflow.screenshots.length === 0 ? (
             <div className="empty-state" style={{ padding: '32px 20px' }}>
-              <div className="empty-icon">📷</div>
+              <div className="empty-icon" aria-hidden="true" />
               <div className="empty-title">No checkpoints yet</div>
               <div className="empty-desc">Take screenshot checkpoints while recording to see them here.</div>
             </div>
@@ -122,10 +126,10 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           <hr className="divider" />
 
           {/* Playback runs */}
-          <div className="section-title" style={{ marginBottom: 14 }}>▶ Playback Runs</div>
+          <div className="section-title" style={{ marginBottom: 14 }}>Playback Runs</div>
           {workflow.runs.length === 0 ? (
             <div className="empty-state" style={{ padding: '32px 20px' }}>
-              <div className="empty-icon">🎥</div>
+              <div className="empty-icon" aria-hidden="true" />
               <div className="empty-title">No playback runs yet</div>
               <div className="empty-desc">Play back this workflow in the extension to capture checkpoint screenshots for comparison.</div>
             </div>

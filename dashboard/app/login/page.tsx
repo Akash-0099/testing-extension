@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+/** Auth UI: sign-in and sign-up tabs posting to Next API routes. */
 export default function LoginPage() {
   const router = useRouter()
   const [tab, setTab] = useState<'signin' | 'signup'>('signin')
@@ -12,6 +13,7 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
+  /** Validates input, calls login or signup API, then redirects home on success. */
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
@@ -121,7 +123,7 @@ export default function LoginPage() {
           )}
           {error && <div className="form-error">{error}</div>}
           <button id="auth-submit" type="submit" className="form-submit" disabled={loading}>
-            {loading ? (tab === 'signin' ? 'Signing in…' : 'Creating account…') : (tab === 'signin' ? 'Sign In →' : 'Create Account →')}
+            {loading ? (tab === 'signin' ? 'Signing in…' : 'Creating account…') : (tab === 'signin' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
 

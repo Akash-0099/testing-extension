@@ -24,6 +24,10 @@ const state = {
   screenshotCount: 0,
   recordingTabId: null,
 
+  // Console / network interception (populated during recording)
+  consoleLogs: [],    // { message, timestamp, url }
+  networkCalls: [],   // { url, method, status, timestamp }
+
   // Playing
   workflowsToPlay: [],
   workflowToPlay: null,
@@ -152,6 +156,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       handleAddCheckpoint(msg.label, sendResponse);
       return true;
 
+    case "RECORD_CONSOLE_LOG":
+      readyPromise.then(() => {
+        if (state.mode === "recording") {
+          if (state.consoleLogs.length < 500) state.consoleLogs.push(msg.log);
+        }
+        sendResponse({ ok: true });
+      });
+      return true;
+
+    case "RECORD_NETWORK_CALL":
+      readyPromise.then(() => {
+        if (state.mode === "recording") {
+          if (state.networkCalls.length < 500) state.networkCalls.push(msg.call);
+        }
+        sendResponse({ ok: true });
+      });
+      return true;
+
+    case "GET_CONSOLE_LOGS":
+      sendResponse({ logs: state.consoleLogs });
+      return false;
+
+    case "GET_NETWORK_CALLS":
+      sendResponse({ calls: state.networkCalls });
+      return false;
+
+    case "ADD_CONSOLE_CHECKPOINT":
+      handleAddConsoleCheckpoint(msg.logMessage, msg.label, sendResponse);
+      return true;
+
+    case "ADD_NETWORK_CHECKPOINT":
+      handleAddNetworkCheckpoint(msg.networkUrl, msg.networkMethod, msg.networkStatus, msg.label, sendResponse);
+      return true;
+
     case "START_PLAYBACK":
       handleStartPlayback(msg.workflows, sendResponse);
       return true;
@@ -254,6 +292,8 @@ async function handleRestartRecording(sendResponse) {
   state.events = [];
   state.screenshots = {};
   state.screenshotCount = 0;
+  state.consoleLogs = [];
+  state.networkCalls = [];
 
   await persistEvents();
 
@@ -357,6 +397,88 @@ async function handleAddCheckpoint(label, sendResponse) {
   }
 }
 
+/**
+ * Records a console-log-based checkpoint.
+ *
+ * Strategy:
+ * Creates a specialized checkpoint event whose trigger condition is a console.log
+ * message that matches `logMessage` (substring). During playback the service worker
+ * will inject a MAIN-world watcher that resolves when that message appears.
+ *
+ * @param {string} logMessage - The console message substring to watch for.
+ * @param {string} label - Human-readable name shown in the UI.
+ * @param {Function} sendResponse
+ */
+async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
+  if (state.mode !== "recording") {
+    sendResponse({ error: "Not recording" });
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) {
+    sendResponse({ error: "No active tab" });
+    return;
+  }
+
+  const autoLabel = label || `Console: ${logMessage.slice(0, 40)}`;
+  const checkpointEvent = {
+    type: "console_checkpoint",
+    label: autoLabel,
+    logMessage,
+    url: tab.url,
+    timestamp: Date.now(),
+  };
+  state.events.push(checkpointEvent);
+  persistEvents();
+
+  broadcastToPopup({ type: "CONSOLE_CHECKPOINT_ADDED", label: autoLabel });
+  sendResponse({ ok: true, label: autoLabel });
+}
+
+/**
+ * Records a network-call-based checkpoint.
+ *
+ * Strategy:
+ * Creates a checkpoint event whose trigger condition is a network request matching
+ * the given URL pattern and HTTP method. During playback the service worker injects
+ * a MAIN-world fetch/XHR watcher that resolves when a matching call completes.
+ *
+ * @param {string} networkUrl - URL substring to match.
+ * @param {string} networkMethod - HTTP method (e.g. "GET", "POST").
+ * @param {number} networkStatus - HTTP status code captured during recording.
+ * @param {string} label - Human-readable name.
+ * @param {Function} sendResponse
+ */
+async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, label, sendResponse) {
+  if (state.mode !== "recording") {
+    sendResponse({ error: "Not recording" });
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) {
+    sendResponse({ error: "No active tab" });
+    return;
+  }
+
+  const autoLabel = label || `Network: ${networkMethod} ${networkUrl.slice(0, 35)}`;
+  const checkpointEvent = {
+    type: "network_checkpoint",
+    label: autoLabel,
+    networkUrl,
+    networkMethod,
+    networkStatus,
+    url: tab.url,
+    timestamp: Date.now(),
+  };
+  state.events.push(checkpointEvent);
+  persistEvents();
+
+  broadcastToPopup({ type: "NETWORK_CHECKPOINT_ADDED", label: autoLabel });
+  sendResponse({ ok: true, label: autoLabel });
+}
+
 // ─── Activate / deactivate recorder on all open tabs ─────────────────────────
 
 /**
@@ -381,6 +503,10 @@ async function activateRecorderOnAllTabs() {
 
 /**
  * Broadcasts recorder deactivation to all open tabs.
+ *
+ * Strategy:
+ * Queries every tab and calls `activateTabRecorder(tabId, "stop")` in parallel via
+ * `Promise.allSettled` so restricted URLs do not block cleanup on normal pages.
  */
 async function deactivateRecorderOnAllTabs() {
   const tabs = await chrome.tabs.query({}).catch(() => []);
@@ -406,6 +532,29 @@ async function activateTabRecorder(tabId, action) {
     });
   } catch (err) {
     return;
+  }
+
+  if (action === "start") {
+    // Inject page-interceptor.js into the MAIN world so it can patch console.log,
+    // fetch, and XHR on the page itself (invisible to the ISOLATED content script).
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content/page-interceptor.js"],
+        world: "MAIN",
+      });
+    } catch (_) {
+      // Restricted pages (chrome://, extensions) will silently fail — that's fine.
+    }
+  } else {
+    // Flip the recording flag in MAIN world so ongoing interceptors stop posting.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => { window.__wfRecording = false; },
+      });
+    } catch (_) {}
   }
 
   await new Promise(r => setTimeout(r, 100));
@@ -593,7 +742,11 @@ async function runSinglePlayback() {
     broadcastToPopup({ type: "PLAYBACK_PROGRESS", index: i, total: events.length, event });
 
     const label = event.type === "checkpoint"
-      ? `📸 ${event.label}`
+      ? `Screenshot: ${event.label}`
+      : event.type === "console_checkpoint"
+      ? `Console: ${event.label}`
+      : event.type === "network_checkpoint"
+      ? `Network: ${event.label}`
       : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
 
     try {
@@ -813,6 +966,134 @@ async function dispatchPlaybackEvent(event, results, meta) {
       return { ok: true };
     }
 
+    case "console_checkpoint": {
+      // Inject an async MAIN-world watcher that resolves when a console.log matching
+      // `event.logMessage` appears, or when the buffer timeout elapses.
+      const [cpTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (cpTab) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: cpTab.id },
+            world: "MAIN",
+            func: (targetMsg, timeoutMs) => {
+              return new Promise((resolve) => {
+                const _orig = console.log;
+                const timer = setTimeout(() => {
+                  console.log = _orig;
+                  resolve(false);
+                }, timeoutMs);
+                console.log = function (...args) {
+                  _orig.apply(console, args);
+                  const txt = args
+                    .map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); } })
+                    .join(" ");
+                  if (txt.includes(targetMsg)) {
+                    clearTimeout(timer);
+                    console.log = _orig;
+                    resolve(true);
+                  }
+                };
+              });
+            },
+            args: [event.logMessage, state.playBufferMs || 8000],
+          });
+        } catch (_) {}
+
+        try {
+          const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
+          const idx = state.screenshotCount++;
+          results.screenshots[idx] = dataUrl;
+          state.screenshots[idx] = dataUrl;
+          broadcastToPopup({
+            type: "CHECKPOINT_REACHED",
+            index: idx,
+            label: event.label,
+            screenshotDataUrl: dataUrl,
+          });
+          chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
+        } catch (_) {}
+      }
+      return { ok: true };
+    }
+
+    case "network_checkpoint": {
+      // Inject an async MAIN-world watcher that resolves when a fetch or XHR request
+      // matching the recorded URL pattern and method completes, or on timeout.
+      const [netTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (netTab) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: netTab.id },
+            world: "MAIN",
+            func: (targetUrl, targetMethod, timeoutMs) => {
+              return new Promise((resolve) => {
+                let resolved = false;
+                const finish = (matched) => {
+                  if (resolved) return;
+                  resolved = true;
+                  clearTimeout(timer);
+                  window.fetch = _origFetch;
+                  XMLHttpRequest.prototype.open = _origOpen;
+                  XMLHttpRequest.prototype.send = _origSend;
+                  resolve(matched);
+                };
+
+                const timer = setTimeout(() => finish(false), timeoutMs);
+
+                const _origFetch = window.fetch;
+                window.fetch = function (input, init) {
+                  const url = typeof input === "string" ? input : (input instanceof Request ? input.url : String(input));
+                  const method = ((init && init.method) || (input instanceof Request && input.method) || "GET").toUpperCase();
+                  const p = _origFetch.apply(window, [input, init]);
+                  p.then(() => {
+                    if (url.includes(targetUrl) && (!targetMethod || method === targetMethod)) finish(true);
+                  }).catch(() => {});
+                  return p;
+                };
+
+                const _origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function (m, u) {
+                  this.__wfWatchMethod = (m || "GET").toUpperCase();
+                  this.__wfWatchUrl = u || "";
+                  return _origOpen.apply(this, arguments);
+                };
+
+                const _origSend = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.send = function () {
+                  this.addEventListener("load", () => {
+                    if (
+                      this.__wfWatchUrl &&
+                      this.__wfWatchUrl.includes(targetUrl) &&
+                      (!targetMethod || this.__wfWatchMethod === targetMethod)
+                    ) {
+                      finish(true);
+                    }
+                  });
+                  return _origSend.apply(this, arguments);
+                };
+              });
+            },
+            args: [event.networkUrl, event.networkMethod, state.playBufferMs || 8000],
+          });
+        } catch (_) {}
+
+        try {
+          const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
+          const idx = state.screenshotCount++;
+          results.screenshots[idx] = dataUrl;
+          state.screenshots[idx] = dataUrl;
+          broadcastToPopup({
+            type: "CHECKPOINT_REACHED",
+            index: idx,
+            label: event.label,
+            screenshotDataUrl: dataUrl,
+          });
+          chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
+        } catch (_) {}
+      }
+      return { ok: true };
+    }
+
     default:
       return { ok: true };
   }
@@ -895,6 +1176,13 @@ function waitForTabLoad(tabId) {
   });
 }
 
+/**
+ * Sets playback mode to idle and notifies the popup (helper for a minimal stop response).
+ *
+ * Strategy:
+ * The main `STOP_PLAYBACK` branch in the message listener performs fuller cleanup; this
+ * function matches a narrow stop contract (mode + popup broadcast + `sendResponse`).
+ */
 function handleStopPlayback(sendResponse) {
   state.mode = "idle";
   broadcastToPopup({ type: "PLAYBACK_STOPPED" });
@@ -903,6 +1191,13 @@ function handleStopPlayback(sendResponse) {
 
 // ─── Export ───────────────────────────────────────────────────────────────────
 
+/**
+ * Returns the in-memory recording as a serializable workflow payload for download.
+ *
+ * Strategy:
+ * Builds a plain object with name, timestamp, events, and screenshot count, then responds
+ * with the parallel `screenshots` map for the popup to package as JSON.
+ */
 async function handleExportWorkflow(sendResponse) {
   const workflow = {
     name: state.workflowName || ("recorded-workflow-" + Date.now()),
@@ -915,10 +1210,18 @@ async function handleExportWorkflow(sendResponse) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Clears all mutable session fields before a new recording or after discarding state.
+ *
+ * Strategy:
+ * Resets arrays, maps, counters, and playback pointers while leaving `mode` to callers.
+ */
 function resetState() {
   state.events = [];
   state.screenshots = {};
   state.screenshotCount = 0;
+  state.consoleLogs = [];
+  state.networkCalls = [];
   state.playbackIndex = 0;
   state.playbackTabId = null;
   state.workflowToPlay = null;
@@ -926,10 +1229,22 @@ function resetState() {
   state.workflowName = "";
 }
 
+/**
+ * Promise-based delay helper for playback pacing and post-navigation waits.
+ *
+ * Strategy:
+ * Wraps `setTimeout` in a Promise for use with `await` in async playback loops.
+ */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Sends a one-way message to the extension popup if it is open.
+ *
+ * Strategy:
+ * Uses `chrome.runtime.sendMessage` and swallows errors when no receiver exists.
+ */
 async function broadcastToPopup(msg) {
   try {
     await chrome.runtime.sendMessage(msg);

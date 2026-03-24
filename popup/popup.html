@@ -34,7 +34,7 @@
           maxlength="60"
         />
         <button class="btn btn-record" id="btnRecord">
-          <span class="btn-icon">⏺</span> Start Recording
+          <span class="btn-icon" aria-hidden="true"></span> Start Recording
         </button>
       </div>
     </div>
@@ -45,14 +45,14 @@
 
       <!-- Source tabs -->
       <div class="load-tabs">
-        <button class="load-tab active" id="tabFromFile">📂 From File</button>
-        <button class="load-tab" id="tabFromDashboard">☁️ From Dashboard</button>
+        <button class="load-tab active" id="tabFromFile">From File</button>
+        <button class="load-tab" id="tabFromDashboard">From Dashboard</button>
       </div>
 
       <!-- From File panel -->
       <div id="paneFromFile" class="load-pane">
         <label class="btn btn-secondary btn-full" id="btnLoadLabel">
-          <span class="btn-icon">📂</span> Load Workflow JSON
+          <span class="btn-icon" aria-hidden="true"></span> Load Workflow JSON
           <input type="file" id="fileInput" accept=".json" style="display:none" />
         </label>
       </div>
@@ -63,8 +63,8 @@
           <select id="workflowSelect" class="db-select">
             <option value="">— Select a workflow —</option>
           </select>
-          <button class="btn btn-icon-only" id="btnAddQueueDb" disabled title="Add to Queue">➕</button>
-          <button class="btn btn-icon-only" id="btnRefreshWorkflows" title="Refresh list">↺</button>
+          <button class="btn btn-icon-only" id="btnAddQueueDb" disabled title="Add to Queue">+</button>
+          <button class="btn btn-icon-only" id="btnRefreshWorkflows" title="Refresh list">R</button>
         </div>
         <div id="dbLoadStatus" class="db-status"></div>
       </div>
@@ -82,7 +82,7 @@
       </div>
 
       <button class="btn btn-play" id="btnPlay" disabled>
-        <span class="btn-icon">▶</span> Play Queue
+        <span class="btn-icon" aria-hidden="true"></span> Play Queue
       </button>
     </div>
 
@@ -90,12 +90,12 @@
     <div class="card">
       <div class="card-label">Dashboard</div>
       <button class="btn btn-secondary btn-full" id="btnOpenDashboard">
-        <span class="btn-icon">📊</span> Open Dashboard
+        <span class="btn-icon" aria-hidden="true"></span> Open Dashboard
       </button>
     </div>
 
     <!-- Dashboard hint -->
-    <p class="hint">Recordings are automatically saved to the <em>Dashboard</em> ↗</p>
+    <p class="hint">Recordings are automatically saved to the <em>Dashboard</em>.</p>
   </section>
 
 
@@ -134,7 +134,13 @@
           placeholder="Checkpoint label (optional)"
         />
         <button class="btn btn-checkpoint" id="btnCheckpoint">
-          <span class="btn-icon">📸</span> Take Screenshot Checkpoint
+          <span class="btn-icon" aria-hidden="true"></span> Take Screenshot Checkpoint
+        </button>
+        <button class="btn btn-console-cp" id="btnConsoleCheckpoint">
+          <span class="btn-icon" aria-hidden="true"></span> Console Log Checkpoint
+        </button>
+        <button class="btn btn-network-cp" id="btnNetworkCheckpoint">
+          <span class="btn-icon" aria-hidden="true"></span> Network Call Checkpoint
         </button>
       </div>
     </div>
@@ -144,14 +150,14 @@
 
     <div class="row-gap" style="margin-bottom: 8px;">
       <button class="btn btn-secondary" id="btnRestartRecording">
-        <span class="btn-icon">🔄</span> Restart
+        <span class="btn-icon" aria-hidden="true"></span> Restart
       </button>
       <button class="btn btn-secondary" id="btnDiscardRecording">
-        <span class="btn-icon">🗑️</span> Discard
+        <span class="btn-icon" aria-hidden="true"></span> Discard
       </button>
     </div>
     <button class="btn btn-stop" id="btnStopRecording">
-      <span class="btn-icon">⏹</span> Stop &amp; Save
+      <span class="btn-icon" aria-hidden="true"></span> Stop &amp; Save
     </button>
   </section>
 
@@ -180,12 +186,66 @@
     </div>
 
     <button class="btn btn-stop" id="btnStopPlayback">
-      <span class="btn-icon">⏹</span> Stop Playback
+      <span class="btn-icon" aria-hidden="true"></span> Stop Playback
     </button>
   </section>
 
   <!-- ─── EXPORT COMPLETE TOAST ─────────────────────────────────── -->
   <div class="toast hidden" id="toast"></div>
+
+  <!-- ─── CONSOLE LOG DIALOG ───────────────────────────────────── -->
+  <div class="cp-dialog hidden" id="consoleLogDialog" role="dialog" aria-modal="true">
+    <div class="cp-dialog-overlay" id="consoleLogOverlay"></div>
+    <div class="cp-dialog-box">
+      <div class="cp-dialog-header">
+        <span class="cp-dialog-title">Select Console Log</span>
+        <button class="cp-dialog-close" id="consoleLogDialogClose" title="Close">x</button>
+      </div>
+      <div class="cp-dialog-body">
+        <div class="cp-list" id="consoleLogList">
+          <div class="cp-empty" id="consoleLogEmpty">No console logs captured yet.</div>
+        </div>
+      </div>
+      <div class="cp-dialog-footer">
+        <input
+          type="text"
+          id="consoleCheckpointLabel"
+          class="input"
+          placeholder="Checkpoint label (optional)"
+        />
+        <button class="btn btn-checkpoint" id="btnAddConsoleCheckpoint" disabled>
+          Add as Checkpoint
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── NETWORK CALL DIALOG ──────────────────────────────────── -->
+  <div class="cp-dialog hidden" id="networkCallDialog" role="dialog" aria-modal="true">
+    <div class="cp-dialog-overlay" id="networkCallOverlay"></div>
+    <div class="cp-dialog-box">
+      <div class="cp-dialog-header">
+        <span class="cp-dialog-title">Select Network Call</span>
+        <button class="cp-dialog-close" id="networkCallDialogClose" title="Close">x</button>
+      </div>
+      <div class="cp-dialog-body">
+        <div class="cp-list" id="networkCallList">
+          <div class="cp-empty" id="networkCallEmpty">No network calls captured yet.</div>
+        </div>
+      </div>
+      <div class="cp-dialog-footer">
+        <input
+          type="text"
+          id="networkCheckpointLabel"
+          class="input"
+          placeholder="Checkpoint label (optional)"
+        />
+        <button class="btn btn-checkpoint" id="btnAddNetworkCheckpoint" disabled>
+          Add as Checkpoint
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script src="popup.js" type="module"></script>
 </body>
