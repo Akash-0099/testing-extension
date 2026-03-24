@@ -25,8 +25,9 @@ const state = {
   recordingTabId: null,
 
   // Console / network interception (populated during recording)
-  consoleLogs: [],    // { message, timestamp, url }
-  networkCalls: [],   // { url, method, status, timestamp }
+  consoleLogs: {},    // { [tabId]: [{ message, timestamp, url }] }
+  networkCalls: {},   // { [tabId]: [{ url, method, status, timestamp }] }
+  dialogState: { consoleOpen: false, networkOpen: false },
 
   // Playing
   workflowsToPlay: [],
@@ -159,7 +160,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "RECORD_CONSOLE_LOG":
       readyPromise.then(() => {
         if (state.mode === "recording") {
-          if (state.consoleLogs.length < 500) state.consoleLogs.push(msg.log);
+          const tid = sender.tab?.id;
+          if (tid) {
+            state.consoleLogs[tid] = state.consoleLogs[tid] || [];
+            if (state.consoleLogs[tid].length < 500) state.consoleLogs[tid].push(msg.log);
+          }
         }
         sendResponse({ ok: true });
       });
@@ -168,18 +173,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "RECORD_NETWORK_CALL":
       readyPromise.then(() => {
         if (state.mode === "recording") {
-          if (state.networkCalls.length < 500) state.networkCalls.push(msg.call);
+          const tid = sender.tab?.id;
+          if (tid) {
+            state.networkCalls[tid] = state.networkCalls[tid] || [];
+            if (state.networkCalls[tid].length < 500) state.networkCalls[tid].push(msg.call);
+          }
         }
         sendResponse({ ok: true });
       });
       return true;
 
     case "GET_CONSOLE_LOGS":
-      sendResponse({ logs: state.consoleLogs });
+      sendResponse({ logs: state.consoleLogs[sender.tab?.id] || [] });
       return false;
 
     case "GET_NETWORK_CALLS":
-      sendResponse({ calls: state.networkCalls });
+      sendResponse({ calls: state.networkCalls[sender.tab?.id] || [] });
+      return false;
+
+    case "TOGGLE_CONSOLE_DIALOG":
+      state.dialogState.consoleOpen = true;
+      state.dialogState.networkOpen = false;
+      broadcastDialogStateToActiveTab();
+      sendResponse({ ok: true });
+      return false;
+
+    case "TOGGLE_NETWORK_DIALOG":
+      state.dialogState.networkOpen = true;
+      state.dialogState.consoleOpen = false;
+      broadcastDialogStateToActiveTab();
+      sendResponse({ ok: true });
+      return false;
+
+    case "CLOSE_LOGS_DIALOG":
+      state.dialogState.consoleOpen = false;
+      state.dialogState.networkOpen = false;
+      broadcastDialogStateToActiveTab();
+      sendResponse({ ok: true });
       return false;
 
     case "ADD_CONSOLE_CHECKPOINT":
@@ -240,6 +270,7 @@ async function handleStartRecording(msg, sendResponse) {
   state.mode = "recording";
   state.recordingTabId = msg.tabId ?? null;
   state.workflowName = msg.name || "";
+  state.dialogState = { consoleOpen: false, networkOpen: false };
 
   // 1. Write wfMode="recording" to local storage.
   await setRecordingActive();
@@ -292,8 +323,10 @@ async function handleRestartRecording(sendResponse) {
   state.events = [];
   state.screenshots = {};
   state.screenshotCount = 0;
-  state.consoleLogs = [];
-  state.networkCalls = [];
+  state.consoleLogs = {};
+  state.networkCalls = {};
+  state.dialogState = { consoleOpen: false, networkOpen: false };
+  broadcastDialogStateToActiveTab();
 
   await persistEvents();
 
@@ -514,6 +547,22 @@ async function deactivateRecorderOnAllTabs() {
 }
 
 /**
+ * Syncs the global dialog state (which log dialog is open) to the currently active tab.
+ */
+async function broadcastDialogStateToActiveTab() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, {
+        type: "SYNC_DIALOG_STATE",
+        consoleOpen: state.dialogState.consoleOpen,
+        networkOpen: state.dialogState.networkOpen
+      }).catch(() => {});
+    }
+  } catch (e) {}
+}
+
+/**
  * Connects a specific tab to the recording loop.
  *
  * Strategy:
@@ -528,7 +577,11 @@ async function activateTabRecorder(tabId, action) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content/recorder.js"],
+      files: ["content/recorder.js", "content/logs-dialog.js"],
+    });
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["content/logs-dialog.css"],
     });
   } catch (err) {
     return;
@@ -564,6 +617,16 @@ async function activateTabRecorder(tabId, action) {
     await chrome.tabs.sendMessage(tabId, { type: msgType });
   } catch (err) {
     // Expected on restricted pages
+  }
+
+  if (action === "start") {
+    // Determine if this is the active tab and trigger its dialog if it should be open
+    try {
+      const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTabs.length && activeTabs[0].id === tabId) {
+        broadcastDialogStateToActiveTab();
+      }
+    } catch (_) {}
   }
 }
 

@@ -193,59 +193,7 @@
   <!-- ─── EXPORT COMPLETE TOAST ─────────────────────────────────── -->
   <div class="toast hidden" id="toast"></div>
 
-  <!-- ─── CONSOLE LOG DIALOG ───────────────────────────────────── -->
-  <div class="cp-dialog hidden" id="consoleLogDialog" role="dialog" aria-modal="true">
-    <div class="cp-dialog-overlay" id="consoleLogOverlay"></div>
-    <div class="cp-dialog-box">
-      <div class="cp-dialog-header">
-        <span class="cp-dialog-title">Select Console Log</span>
-        <button class="cp-dialog-close" id="consoleLogDialogClose" title="Close">x</button>
-      </div>
-      <div class="cp-dialog-body">
-        <div class="cp-list" id="consoleLogList">
-          <div class="cp-empty" id="consoleLogEmpty">No console logs captured yet.</div>
-        </div>
-      </div>
-      <div class="cp-dialog-footer">
-        <input
-          type="text"
-          id="consoleCheckpointLabel"
-          class="input"
-          placeholder="Checkpoint label (optional)"
-        />
-        <button class="btn btn-checkpoint" id="btnAddConsoleCheckpoint" disabled>
-          Add as Checkpoint
-        </button>
-      </div>
-    </div>
-  </div>
 
-  <!-- ─── NETWORK CALL DIALOG ──────────────────────────────────── -->
-  <div class="cp-dialog hidden" id="networkCallDialog" role="dialog" aria-modal="true">
-    <div class="cp-dialog-overlay" id="networkCallOverlay"></div>
-    <div class="cp-dialog-box">
-      <div class="cp-dialog-header">
-        <span class="cp-dialog-title">Select Network Call</span>
-        <button class="cp-dialog-close" id="networkCallDialogClose" title="Close">x</button>
-      </div>
-      <div class="cp-dialog-body">
-        <div class="cp-list" id="networkCallList">
-          <div class="cp-empty" id="networkCallEmpty">No network calls captured yet.</div>
-        </div>
-      </div>
-      <div class="cp-dialog-footer">
-        <input
-          type="text"
-          id="networkCheckpointLabel"
-          class="input"
-          placeholder="Checkpoint label (optional)"
-        />
-        <button class="btn btn-checkpoint" id="btnAddNetworkCheckpoint" disabled>
-          Add as Checkpoint
-        </button>
-      </div>
-    </div>
-  </div>
 
   <script src="popup.js" type="module"></script>
 </body>

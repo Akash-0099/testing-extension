@@ -68,23 +68,6 @@ const btnRestartRecording = document.getElementById("btnRestartRecording");
 const btnDiscardRecording = document.getElementById("btnDiscardRecording");
 const checkpointThumbsRec = document.getElementById("checkpointThumbsRec");
 
-// Console Log Dialog
-const consoleLogDialog      = document.getElementById("consoleLogDialog");
-const consoleLogOverlay     = document.getElementById("consoleLogOverlay");
-const consoleLogDialogClose = document.getElementById("consoleLogDialogClose");
-const consoleLogList        = document.getElementById("consoleLogList");
-const consoleLogEmpty       = document.getElementById("consoleLogEmpty");
-const consoleCheckpointLabel = document.getElementById("consoleCheckpointLabel");
-const btnAddConsoleCheckpoint = document.getElementById("btnAddConsoleCheckpoint");
-
-// Network Call Dialog
-const networkCallDialog      = document.getElementById("networkCallDialog");
-const networkCallOverlay     = document.getElementById("networkCallOverlay");
-const networkCallDialogClose = document.getElementById("networkCallDialogClose");
-const networkCallList        = document.getElementById("networkCallList");
-const networkCallEmpty       = document.getElementById("networkCallEmpty");
-const networkCheckpointLabel = document.getElementById("networkCheckpointLabel");
-const btnAddNetworkCheckpoint = document.getElementById("btnAddNetworkCheckpoint");
 
 // Playing
 const playProgressBar   = document.getElementById("playProgressBar");
@@ -204,143 +187,14 @@ btnCheckpoint.addEventListener("click", async () => {
 
 // ─── Console Log Checkpoint dialog ────────────────────────────────────────────
 
-let selectedConsoleLog = null;
-
-btnConsoleCheckpoint.addEventListener("click", async () => {
-  selectedConsoleLog = null;
-  btnAddConsoleCheckpoint.disabled = true;
-  consoleCheckpointLabel.value = "";
-
-  const res = await sendToSW({ type: "GET_CONSOLE_LOGS" });
-  const logs = res?.logs ?? [];
-
-  // Clear previous items (keep empty placeholder)
-  while (consoleLogList.firstChild) consoleLogList.removeChild(consoleLogList.firstChild);
-  consoleLogList.appendChild(consoleLogEmpty);
-
-  if (logs.length === 0) {
-    consoleLogEmpty.style.display = "";
-  } else {
-    consoleLogEmpty.style.display = "none";
-    logs.forEach((log, i) => {
-      const item = document.createElement("div");
-      item.className = "cp-item";
-      item.dataset.index = i;
-
-      const time = new Date(log.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      const msgTrunc = log.message.length > 80 ? log.message.slice(0, 78) + "…" : log.message;
-
-      item.innerHTML = `<span class="cp-item-badge cp-item-badge--log">LOG</span>
-        <span class="cp-item-text">${escapeHtml(msgTrunc)}</span>
-        <span class="cp-item-time">${time}</span>`;
-
-      item.addEventListener("click", () => {
-        document.querySelectorAll("#consoleLogList .cp-item").forEach(el => el.classList.remove("selected"));
-        item.classList.add("selected");
-        selectedConsoleLog = log;
-        btnAddConsoleCheckpoint.disabled = false;
-      });
-
-      consoleLogList.appendChild(item);
-    });
-  }
-
-  consoleLogDialog.classList.remove("hidden");
-});
-
-consoleLogDialogClose.addEventListener("click", () => consoleLogDialog.classList.add("hidden"));
-consoleLogOverlay.addEventListener("click", () => consoleLogDialog.classList.add("hidden"));
-
-btnAddConsoleCheckpoint.addEventListener("click", async () => {
-  if (!selectedConsoleLog) return;
-  const label = consoleCheckpointLabel.value.trim() || null;
-  btnAddConsoleCheckpoint.disabled = true;
-
-  const res = await sendToSW({
-    type: "ADD_CONSOLE_CHECKPOINT",
-    logMessage: selectedConsoleLog.message,
-    label,
-  });
-
-  if (res?.ok) {
-    consoleLogDialog.classList.add("hidden");
-    showToast("Console checkpoint added", "success");
-  } else {
-    showToast("Failed: " + (res?.error ?? "unknown"), "error");
-    btnAddConsoleCheckpoint.disabled = false;
-  }
+btnConsoleCheckpoint.addEventListener("click", () => {
+  sendToSW({ type: "TOGGLE_CONSOLE_DIALOG" }).then(() => window.close());
 });
 
 // ─── Network Call Checkpoint dialog ───────────────────────────────────────────
 
-let selectedNetworkCall = null;
-
-btnNetworkCheckpoint.addEventListener("click", async () => {
-  selectedNetworkCall = null;
-  btnAddNetworkCheckpoint.disabled = true;
-  networkCheckpointLabel.value = "";
-
-  const res = await sendToSW({ type: "GET_NETWORK_CALLS" });
-  const calls = res?.calls ?? [];
-
-  while (networkCallList.firstChild) networkCallList.removeChild(networkCallList.firstChild);
-  networkCallList.appendChild(networkCallEmpty);
-
-  if (calls.length === 0) {
-    networkCallEmpty.style.display = "";
-  } else {
-    networkCallEmpty.style.display = "none";
-    calls.forEach((call, i) => {
-      const item = document.createElement("div");
-      item.className = "cp-item";
-      item.dataset.index = i;
-
-      const time = new Date(call.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      const urlTrunc = call.url.length > 55 ? "…" + call.url.slice(-54) : call.url;
-      const statusClass = call.status >= 400 ? "cp-item-badge--error" : call.status >= 300 ? "cp-item-badge--warn" : "cp-item-badge--ok";
-
-      item.innerHTML = `<span class="cp-item-badge cp-item-badge--method">${escapeHtml(call.method)}</span>
-        <span class="cp-item-text">${escapeHtml(urlTrunc)}</span>
-        <span class="cp-item-badge ${statusClass}">${call.status}</span>
-        <span class="cp-item-time">${time}</span>`;
-
-      item.addEventListener("click", () => {
-        document.querySelectorAll("#networkCallList .cp-item").forEach(el => el.classList.remove("selected"));
-        item.classList.add("selected");
-        selectedNetworkCall = call;
-        btnAddNetworkCheckpoint.disabled = false;
-      });
-
-      networkCallList.appendChild(item);
-    });
-  }
-
-  networkCallDialog.classList.remove("hidden");
-});
-
-networkCallDialogClose.addEventListener("click", () => networkCallDialog.classList.add("hidden"));
-networkCallOverlay.addEventListener("click", () => networkCallDialog.classList.add("hidden"));
-
-btnAddNetworkCheckpoint.addEventListener("click", async () => {
-  if (!selectedNetworkCall) return;
-  const label = networkCheckpointLabel.value.trim() || null;
-  btnAddNetworkCheckpoint.disabled = true;
-
-  const res = await sendToSW({
-    type: "ADD_NETWORK_CHECKPOINT",
-    networkUrl: selectedNetworkCall.url,
-    networkMethod: selectedNetworkCall.method,
-    networkStatus: selectedNetworkCall.status,
-    label,
-  });
-
-  if (res?.ok) {
-    networkCallDialog.classList.add("hidden");
-    showToast("Network checkpoint added", "success");
-  } else {
-    showToast("Failed: " + (res?.error ?? "unknown"), "error");
-    btnAddNetworkCheckpoint.disabled = false;
-  }
+btnNetworkCheckpoint.addEventListener("click", () => {
+  sendToSW({ type: "TOGGLE_NETWORK_DIALOG" }).then(() => window.close());
 });
 
 // ─── HTML escape helper ────────────────────────────────────────────────────────
