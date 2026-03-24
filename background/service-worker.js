@@ -114,6 +114,15 @@ const readyPromise = new Promise(r => { _readyResolve = r; });
       state.screenshotCount = stored.wfScreenshotCount || 0;
     }
   } catch (_) {}
+
+  // Restore network calls from session storage (survives SW restarts within the browser session).
+  try {
+    const session = await chrome.storage.session.get("wfNetworkCalls");
+    if (session.wfNetworkCalls) {
+      state.networkCalls = session.wfNetworkCalls;
+    }
+  } catch (_) {}
+
   _readyResolve();
 })();
 
@@ -171,17 +180,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case "RECORD_NETWORK_CALL":
-      readyPromise.then(() => {
-        if (state.mode === "recording") {
-          const tid = sender.tab?.id;
-          if (tid) {
-            state.networkCalls[tid] = state.networkCalls[tid] || [];
-            if (state.networkCalls[tid].length < 500) state.networkCalls[tid].push(msg.call);
-          }
-        }
-        sendResponse({ ok: true });
-      });
-      return true;
+      // Network calls are now captured via chrome.webRequest (recordNetworkCall).
+      // This handler is kept as a no-op fallback for any legacy callers.
+      sendResponse({ ok: true });
+      return false;
 
     case "GET_CONSOLE_LOGS":
       sendResponse({ logs: state.consoleLogs[sender.tab?.id] || [] });
@@ -303,6 +305,7 @@ async function handleStopRecording(sendResponse) {
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
 
   sendResponse({ ok: true, events: state.events, screenshots: state.screenshots });
 
@@ -332,6 +335,7 @@ async function handleRestartRecording(sendResponse) {
   broadcastDialogStateToActiveTab();
 
   await persistEvents();
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
 
   sendResponse({ ok: true });
 }
@@ -355,6 +359,7 @@ async function handleDiscardRecording(sendResponse) {
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
 
   sendResponse({ ok: true });
 }
@@ -591,6 +596,16 @@ async function activateTabRecorder(tabId, action) {
   }
 
   if (action === "start") {
+    // Activate the isolated-world listener before patching the MAIN world so that
+    // isRecording is true before __wfRecording is set to true. This closes the race
+    // window where network calls could be posted by the interceptor before recorder.js
+    // is ready to forward them.
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "RECORDER_START" });
+    } catch (err) {
+      // Expected on restricted pages
+    }
+
     // Inject page-interceptor.js into the MAIN world so it can patch console.log,
     // fetch, and XHR on the page itself (invisible to the ISOLATED content script).
     try {
@@ -611,15 +626,14 @@ async function activateTabRecorder(tabId, action) {
         func: () => { window.__wfRecording = false; },
       });
     } catch (_) {}
-  }
 
-  await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 100));
 
-  const msgType = action === "start" ? "RECORDER_START" : "RECORDER_STOP";
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: msgType });
-  } catch (err) {
-    // Expected on restricted pages
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "RECORDER_STOP" });
+    } catch (err) {
+      // Expected on restricted pages
+    }
   }
 
   if (action === "start") {
@@ -632,6 +646,54 @@ async function activateTabRecorder(tabId, action) {
     } catch (_) {}
   }
 }
+
+// ─── Network capture via webRequest ──────────────────────────────────────────
+
+/**
+ * Stores a captured network call and notifies the active tab's UI overlay.
+ *
+ * Strategy:
+ * Called from both onCompleted and onErrorOccurred webRequest listeners. Waits
+ * for readyPromise so state.mode is accurate even after a SW restart. Persists to
+ * session storage on every write so data survives SW dormancy. Sends NETWORK_CALL_LIVE
+ * to the tab so the Network Calls panel updates in real-time when it is open.
+ */
+function recordNetworkCall(tabId, call) {
+  readyPromise.then(() => {
+    if (state.mode !== "recording") return;
+    if (!tabId || tabId < 0) return;
+    state.networkCalls[tabId] = state.networkCalls[tabId] || [];
+    if (state.networkCalls[tabId].length < 500) {
+      state.networkCalls[tabId].push(call);
+      chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+    }
+    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call }).catch(() => {});
+  });
+}
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => {
+    recordNetworkCall(details.tabId, {
+      url: details.url,
+      method: details.method,
+      status: details.statusCode,
+      timestamp: details.timeStamp,
+    });
+  },
+  { urls: ["<all_urls>"], types: ["xmlhttprequest"] }
+);
+
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => {
+    recordNetworkCall(details.tabId, {
+      url: details.url,
+      method: details.method,
+      status: 0,
+      timestamp: details.timeStamp,
+    });
+  },
+  { urls: ["<all_urls>"], types: ["xmlhttprequest"] }
+);
 
 // ─── Tab switch tracking ──────────────────────────────────────────────────────
 
@@ -888,6 +950,7 @@ async function runSinglePlayback() {
   if (workflow._dashboardId && runStatus !== "aborted") {
     saveRunToDashboard(
       workflow._dashboardId,
+      workflow.events || [],
       results.screenshots,
       playedAt,
       runStatus,
@@ -934,10 +997,15 @@ async function saveToDashboard(events, screenshots) {
  * Bundles the checkpoints validated during the automated run and posts them against the `workflowId` 
  * to serve as proof-of-work/QA artifacts on the dashboard.
  */
-async function saveRunToDashboard(workflowId, screenshots, playedAt, status = 'passed', failedStep = null) {
+async function saveRunToDashboard(workflowId, events, screenshots, playedAt, status = 'passed', failedStep = null) {
+  // Derive labels from the actual checkpoint events so the run reflects what was recorded.
+  const checkpointEvents = (events || []).filter(e =>
+    e.type === 'checkpoint' || e.type === 'console_checkpoint' || e.type === 'network_checkpoint'
+  );
   const checkpoints = {};
   for (const [k, v] of Object.entries(screenshots || {})) {
-    checkpoints[k] = { dataUrl: v, label: `Checkpoint ${parseInt(k) + 1}` };
+    const cp = checkpointEvents[parseInt(k)];
+    checkpoints[k] = { dataUrl: v, label: cp?.label ?? `Checkpoint ${parseInt(k) + 1}` };
   }
   const body = {
     workflowId,
@@ -1037,6 +1105,14 @@ async function dispatchPlaybackEvent(event, results, meta) {
       // `event.logMessage` appears, or when the buffer timeout elapses.
       const [cpTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (cpTab) {
+        // Notify player.js HUD that we are actively waiting for this checkpoint.
+        chrome.tabs.sendMessage(cpTab.id, {
+          type: "PLAYBACK_WAITING_CHECKPOINT",
+          checkpointType: "console",
+          label: event.label,
+          detail: event.logMessage,
+        }).catch(() => {});
+
         try {
           await chrome.scripting.executeScript({
             target: { tabId: cpTab.id },
@@ -1087,6 +1163,14 @@ async function dispatchPlaybackEvent(event, results, meta) {
       // matching the recorded URL pattern and method completes, or on timeout.
       const [netTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (netTab) {
+        // Notify player.js HUD that we are actively waiting for this checkpoint.
+        chrome.tabs.sendMessage(netTab.id, {
+          type: "PLAYBACK_WAITING_CHECKPOINT",
+          checkpointType: "network",
+          label: event.label,
+          detail: `${event.networkMethod} ${event.networkUrl}`,
+        }).catch(() => {});
+
         try {
           await chrome.scripting.executeScript({
             target: { tabId: netTab.id },

@@ -481,83 +481,300 @@
    */
   function showRecordingIndicator() {
     if (document.getElementById(INDICATOR_ID)) return;
-    
-    // Main Container
-    const container = document.createElement("div");
-    container.id = INDICATOR_ID;
-    container.style.cssText = `
-      position:fixed;top:12px;right:12px;z-index:2147483647;
-      display:flex;flex-direction:column;align-items:flex-end;gap:8px;
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-    `;
 
-    // Control Cluster
-    const btnCluster = document.createElement("div");
-    btnCluster.style.cssText = "display:flex;gap:6px;";
-
+    // ── Inject styles ────────────────────────────────────────────────────────
     if (!document.getElementById("__wf_blink_style__")) {
       const s = document.createElement("style");
       s.id = "__wf_blink_style__";
       s.textContent = `
-        @keyframes __wf_blink__{0%,100%{opacity:1}50%{opacity:0.2}}
-        .__wf_hud_btn__{
-          background:#1f2937;color:#f3f4f6;border:1px solid #374151;
-          padding:6px 12px;border-radius:6px;font-size:12px;font-weight:500;
-          cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.3);transition:background 0.15s;
+        @keyframes __wf_blink__{0%,100%{opacity:1}50%{opacity:0.25}}
+        @keyframes __wf_spin__{to{transform:rotate(360deg)}}
+
+        /* Radial hub */
+        #__workflow_rec_indicator__{
+          position:fixed;
+          bottom:28px;right:28px;
+          width:0;height:0;
+          z-index:2147483647;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+          touch-action:none;
+          user-select:none;
         }
-        .__wf_hud_btn__:hover{background:#374151;}
+
+        /* Center REC node */
+        .__wf_hub__{
+          position:absolute;
+          width:56px;height:56px;
+          border-radius:50%;
+          background:rgba(220,38,38,0.95);
+          box-shadow:0 4px 20px rgba(220,38,38,0.45),0 2px 8px rgba(0,0,0,0.35);
+          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          cursor:grab;
+          transform:translate(-50%,-50%);
+          transition:box-shadow 0.2s,background 0.2s;
+          border:2.5px solid rgba(255,255,255,0.25);
+        }
+        .__wf_hub__:active{cursor:grabbing;}
+        .__wf_hub__:hover{box-shadow:0 6px 24px rgba(220,38,38,0.6),0 2px 8px rgba(0,0,0,0.35);}
+        .__wf_hub_dot__{
+          width:9px;height:9px;background:#fff;border-radius:50%;
+          animation:__wf_blink__ 1.1s ease-in-out infinite;margin-bottom:3px;
+        }
+        .__wf_hub_label__{
+          font-size:10px;font-weight:700;color:#fff;letter-spacing:0.8px;line-height:1;
+        }
+
+        /* Toggle arrow ring */
+        .__wf_toggle_ring__{
+          position:absolute;
+          width:26px;height:26px;border-radius:50%;
+          background:rgba(255,255,255,0.15);
+          border:1.5px solid rgba(255,255,255,0.35);
+          display:flex;align-items:center;justify-content:center;
+          cursor:pointer;
+          transform:translate(-50%,-50%) translateY(-36px);
+          transition:background 0.2s;
+          font-size:11px;color:#fff;
+        }
+        .__wf_toggle_ring__:hover{background:rgba(255,255,255,0.28);}
+
+        /* Radial buttons — common */
+        .__wf_radial_btn__{
+          position:absolute;
+          width:44px;height:44px;border-radius:50%;
+          border:none;cursor:pointer;
+          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          gap:2px;
+          font-size:16px;
+          box-shadow:0 3px 12px rgba(0,0,0,0.35);
+          transform:translate(-50%,-50%) scale(0);
+          opacity:0;
+          transition:transform 0.28s cubic-bezier(.34,1.56,.64,1),opacity 0.2s ease,box-shadow 0.2s;
+          pointer-events:none;
+        }
+        .__wf_radial_btn__ span.__wf_btn_label__{
+          font-size:8px;font-weight:600;color:inherit;letter-spacing:0.3px;line-height:1;
+          white-space:nowrap;
+        }
+        .__wf_radial_btn__:hover{
+          box-shadow:0 5px 18px rgba(0,0,0,0.45);
+          filter:brightness(1.1);
+        }
+
+        /* Expanded state toggled on the hub wrapper */
+        .__wf_expanded__ .__wf_radial_btn__{
+          transform:translate(-50%,-50%) scale(1);
+          opacity:1;
+          pointer-events:auto;
+        }
+
+        /* Tooltip */
+        .__wf_radial_btn__::after{
+          content:attr(data-tip);
+          position:absolute;
+          bottom:calc(100% + 6px);left:50%;
+          transform:translateX(-50%);
+          background:rgba(17,24,39,0.9);
+          color:#f9fafb;font-size:10px;font-weight:500;
+          padding:3px 7px;border-radius:4px;
+          white-space:nowrap;
+          opacity:0;pointer-events:none;
+          transition:opacity 0.15s;
+        }
+        .__wf_radial_btn__:hover::after{opacity:1;}
+
+        /* Inner-ring colours */
+        .__wf_btn_screenshot__{ background:#2563eb;color:#fff; }
+        .__wf_btn_network__{   background:#0891b2;color:#fff; }
+        .__wf_btn_console__{   background:#7c3aed;color:#fff; }
+
+        /* Outer-ring colours */
+        .__wf_btn_save__{      background:#16a34a;color:#fff; }
+        .__wf_btn_discard__{   background:#dc2626;color:#fff; }
+        .__wf_btn_restart__{   background:#d97706;color:#fff; }
       `;
       document.head.appendChild(s);
     }
 
-    const btnScreenshot = document.createElement("button");
-    btnScreenshot.className = "__wf_hud_btn__";
-    btnScreenshot.textContent = "📸 Screenshot";
-    btnScreenshot.onclick = () => {
-      const label = prompt("Enter checkpoint label (optional):");
-      if (label !== null) {
-        chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label }).catch(() => {});
-      }
-    };
+    // ── Build hub container ───────────────────────────────────────────────────
+    const container = document.createElement("div");
+    container.id = INDICATOR_ID;
 
-    const btnNetwork = document.createElement("button");
-    btnNetwork.className = "__wf_hud_btn__";
-    btnNetwork.textContent = "🌐 Network";
-    btnNetwork.onclick = () => {
-      chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {});
-    };
+    // ── Center node ───────────────────────────────────────────────────────────
+    const hub = document.createElement("div");
+    hub.className = "__wf_hub__";
+    const dot = document.createElement("div");
+    dot.className = "__wf_hub_dot__";
+    const recLabel = document.createElement("div");
+    recLabel.className = "__wf_hub_label__";
+    recLabel.textContent = "REC";
+    hub.appendChild(dot);
+    hub.appendChild(recLabel);
 
-    const btnConsole = document.createElement("button");
-    btnConsole.className = "__wf_hud_btn__";
-    btnConsole.textContent = "💻 Console";
-    btnConsole.onclick = () => {
-      chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {});
-    };
+    // ── Expand / collapse toggle (small arrow above hub) ──────────────────────
+    let expanded = false;
+    const toggleRing = document.createElement("div");
+    toggleRing.className = "__wf_toggle_ring__";
+    toggleRing.textContent = "▲";
+    toggleRing.title = "Expand controls";
+    toggleRing.addEventListener("click", (e) => {
+      e.stopPropagation();
+      expanded = !expanded;
+      container.classList.toggle("__wf_expanded__", expanded);
+      toggleRing.textContent = expanded ? "▼" : "▲";
+      toggleRing.title = expanded ? "Collapse controls" : "Expand controls";
+    });
 
-    btnCluster.appendChild(btnScreenshot);
-    btnCluster.appendChild(btnNetwork);
-    btnCluster.appendChild(btnConsole);
+    // ── Radial button factory ─────────────────────────────────────────────────
+    function makeRadialBtn(icon, label, cls, tipText, rx, ry, onClick) {
+      const btn = document.createElement("button");
+      btn.className = `__wf_radial_btn__ ${cls}`;
+      btn.setAttribute("data-tip", tipText);
+      btn.style.left = `${rx}px`;
+      btn.style.top  = `${ry}px`;
+      btn.innerHTML = `${icon}<span class="__wf_btn_label__">${label}</span>`;
+      btn.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+      return btn;
+    }
 
-    // REC Badge
-    const recBadge = document.createElement("div");
-    recBadge.style.cssText = `
-      background:rgba(220,38,38,0.92);color:#fff;
-      font-size:12px;font-weight:600;padding:5px 10px 5px 8px;
-      border-radius:20px;display:flex;align-items:center;gap:6px;
-      box-shadow:0 2px 8px rgba(0,0,0,0.3);pointer-events:none;letter-spacing:0.3px;
-    `;
-    const dot = document.createElement("span");
-    dot.style.cssText = `
-      width:8px;height:8px;background:#fff;border-radius:50%;
-      animation:__wf_blink__ 1s infinite;flex-shrink:0;
-    `;
-    recBadge.appendChild(dot);
-    recBadge.appendChild(document.createTextNode("REC"));
+    // Inner ring radius 68px, outer ring radius 128px.
+    // Angles chosen so buttons fan out nicely above/left of the hub.
+    // θ measured clockwise from top: top=270°(−90°), top-right=330°(−30°), right=30°, etc.
+    // Inner ring: 3 buttons at 210°, 270°, 330° (bottom-left arc, pointing upward)
+    // Outer ring: 3 buttons at 210°, 270°, 330° but further out
+    const R1 = 72;   // inner ring radius
+    const R2 = 136;  // outer ring radius
 
-    container.appendChild(btnCluster);
-    container.appendChild(recBadge);
-    
+    function pos(angleDeg, radius) {
+      const rad = (angleDeg - 90) * Math.PI / 180;
+      return { x: Math.round(radius * Math.cos(rad)), y: Math.round(radius * Math.sin(rad)) };
+    }
+
+    // Inner ring — observation tools (top-left arc: 210°, 270°, 330°)
+    const innerAngles = [210, 270, 330];
+    const p1 = pos(innerAngles[0], R1);
+    const p2 = pos(innerAngles[1], R1);
+    const p3 = pos(innerAngles[2], R1);
+
+    const btnScreenshot = makeRadialBtn("📸", "Shot", "__wf_btn_screenshot__", "Screenshot checkpoint",
+      p1.x, p1.y, () => {
+        const lbl = prompt("Screenshot checkpoint label (optional):");
+        if (lbl !== null) chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label: lbl }).catch(() => {});
+      });
+
+    const btnNetwork = makeRadialBtn("🌐", "Net", "__wf_btn_network__", "Toggle Network log",
+      p2.x, p2.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {}));
+
+    const btnConsole = makeRadialBtn("💻", "Log", "__wf_btn_console__", "Toggle Console log",
+      p3.x, p3.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {}));
+
+    // Outer ring — session controls (same arc, further out)
+    const outerAngles = [210, 270, 330];
+    const q1 = pos(outerAngles[0], R2);
+    const q2 = pos(outerAngles[1], R2);
+    const q3 = pos(outerAngles[2], R2);
+
+    const btnSave = makeRadialBtn("💾", "Save", "__wf_btn_save__", "Stop & Save",
+      q1.x, q1.y, () => chrome.runtime.sendMessage({ type: "STOP_RECORDING" }).catch(() => {}));
+
+    const btnDiscard = makeRadialBtn("🗑", "Discard", "__wf_btn_discard__", "Discard recording",
+      q2.x, q2.y, () => {
+        if (confirm("Discard this recording?")) {
+          chrome.runtime.sendMessage({ type: "DISCARD_RECORDING" }).catch(() => {});
+        }
+      });
+
+    const btnRestart = makeRadialBtn("🔄", "Restart", "__wf_btn_restart__", "Restart recording",
+      q3.x, q3.y, () => {
+        if (confirm("Restart recording? Current events will be cleared.")) {
+          chrome.runtime.sendMessage({ type: "RESTART_RECORDING" }).catch(() => {});
+        }
+      });
+
+    container.appendChild(hub);
+    container.appendChild(toggleRing);
+    container.appendChild(btnScreenshot);
+    container.appendChild(btnNetwork);
+    container.appendChild(btnConsole);
+    container.appendChild(btnSave);
+    container.appendChild(btnDiscard);
+    container.appendChild(btnRestart);
     document.body.appendChild(container);
+
+    // ── Drag logic ────────────────────────────────────────────────────────────
+    // The hub is positioned at fixed bottom/right initially.
+    // On drag start we switch to top/left coords to make math easy.
+    let dragging = false;
+    let dragStartX, dragStartY, startLeft, startTop;
+
+    function getContainerRect() {
+      const s = getComputedStyle(container);
+      // Convert bottom/right to top/left if needed
+      const rect = container.getBoundingClientRect();
+      return { left: rect.left, top: rect.top };
+    }
+
+    hub.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = getContainerRect();
+      dragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      startLeft = rect.left;
+      startTop  = rect.top;
+      // Switch to absolute top/left positioning so we can move freely
+      container.style.bottom = "auto";
+      container.style.right  = "auto";
+      container.style.left   = startLeft + "px";
+      container.style.top    = startTop  + "px";
+      hub.style.cursor = "grabbing";
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      const newLeft = Math.max(0, Math.min(window.innerWidth  - 56, startLeft + dx));
+      const newTop  = Math.max(0, Math.min(window.innerHeight - 56, startTop  + dy));
+      container.style.left = newLeft + "px";
+      container.style.top  = newTop  + "px";
+    });
+
+    document.addEventListener("mouseup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      hub.style.cursor = "grab";
+    });
+
+    // Touch support
+    hub.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      const rect = getContainerRect();
+      dragging = true;
+      dragStartX = t.clientX;
+      dragStartY = t.clientY;
+      startLeft = rect.left;
+      startTop  = rect.top;
+      container.style.bottom = "auto";
+      container.style.right  = "auto";
+      container.style.left   = startLeft + "px";
+      container.style.top    = startTop  + "px";
+    }, { passive: true });
+
+    document.addEventListener("touchmove", (e) => {
+      if (!dragging) return;
+      const t = e.touches[0];
+      const dx = t.clientX - dragStartX;
+      const dy = t.clientY - dragStartY;
+      const newLeft = Math.max(0, Math.min(window.innerWidth  - 56, startLeft + dx));
+      const newTop  = Math.max(0, Math.min(window.innerHeight - 56, startTop  + dy));
+      container.style.left = newLeft + "px";
+      container.style.top  = newTop  + "px";
+    }, { passive: true });
+
+    document.addEventListener("touchend", () => { dragging = false; });
   }
 
   /**
@@ -649,17 +866,9 @@
             url: window.location.href,
           },
         });
-      } else if (e.data.type === "network_call") {
-        chrome.runtime.sendMessage({
-          type: "RECORD_NETWORK_CALL",
-          call: {
-            url: e.data.url,
-            method: e.data.method,
-            status: e.data.status,
-            timestamp: e.data.timestamp,
-          },
-        });
       }
+      // network_call forwarding removed — the service worker captures XHR directly
+      // via chrome.webRequest, which works regardless of injection timing.
     } catch (_) {}
   });
 

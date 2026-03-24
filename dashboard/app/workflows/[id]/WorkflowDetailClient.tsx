@@ -3,6 +3,17 @@
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
+// ─── Event type helpers ───────────────────────────────────────────────────────
+
+type CheckpointEvent =
+  | { type: 'checkpoint';         label: string; screenshotIndex: number; url: string; timestamp: number }
+  | { type: 'console_checkpoint'; label: string; logMessage: string;      url: string; timestamp: number }
+  | { type: 'network_checkpoint'; label: string; networkUrl: string; networkMethod: string; networkStatus: number; url: string; timestamp: number }
+
+function isCheckpointEvent(e: any): e is CheckpointEvent {
+  return e?.type === 'checkpoint' || e?.type === 'console_checkpoint' || e?.type === 'network_checkpoint'
+}
+
 interface Screenshot {
   id: string
   index: number
@@ -46,6 +57,25 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
   const eventCount = Array.isArray(workflow.events) ? workflow.events.length : 0
   const passedRuns = workflow.runs.filter(r => r.status === 'passed').length
   const failedRuns = workflow.runs.filter(r => r.status === 'failed').length
+
+  // All three checkpoint types extracted from the events JSON
+  const checkpointEvents = Array.isArray(workflow.events)
+    ? (workflow.events as any[]).filter(isCheckpointEvent)
+    : []
+
+  // Map screenshot-checkpoint events to their captured thumbnail (screenshots are keyed by
+  // sequential index among screenshot-only checkpoints, not the overall event index).
+  let ssIdx = 0
+  const screenshotByEventIndex = new Map<number, Screenshot>()
+  if (Array.isArray(workflow.events)) {
+    (workflow.events as any[]).forEach((ev, evIdx) => {
+      if (ev?.type === 'checkpoint') {
+        const ss = workflow.screenshots.find(s => s.index === ssIdx)
+        if (ss) screenshotByEventIndex.set(evIdx, ss)
+        ssIdx++
+      }
+    })
+  }
 
   return (
     <div className="app-shell">
@@ -120,6 +150,140 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
                   <div className="screenshot-thumb-label">{s.label || `Checkpoint ${s.index + 1}`}</div>
                 </div>
               ))}
+            </div>
+          )}
+
+          <hr className="divider" />
+
+          {/* Checkpoint timeline */}
+          <div className="section-title" style={{ marginBottom: 14 }}>Checkpoint Timeline</div>
+          {checkpointEvents.length === 0 ? (
+            <div className="empty-state" style={{ padding: '24px 20px', marginBottom: 24 }}>
+              <div className="empty-icon" aria-hidden="true" />
+              <div className="empty-title">No checkpoints recorded</div>
+              <div className="empty-desc">Add screenshot, console, or network checkpoints while recording to see them here.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+              {checkpointEvents.map((cp, i) => {
+                const isScreenshot = cp.type === 'checkpoint'
+                const isConsole    = cp.type === 'console_checkpoint'
+                const isNetwork    = cp.type === 'network_checkpoint'
+
+                const accentColor = isScreenshot ? 'var(--blue, #3b82f6)'
+                  : isConsole    ? '#7c3aed'
+                  : '#0891b2'
+
+                const icon = isScreenshot ? '📸' : isConsole ? '💻' : '🌐'
+                const typeLabel = isScreenshot ? 'Screenshot' : isConsole ? 'Console' : 'Network'
+
+                // Find the thumbnail for screenshot checkpoints
+                let thumb: Screenshot | undefined
+                if (isScreenshot) {
+                  // Re-derive per rendered list order
+                  let screenshotCpIdx = 0
+                  for (let j = 0; j <= i; j++) {
+                    if (checkpointEvents[j].type === 'checkpoint') {
+                      if (j === i) {
+                        thumb = workflow.screenshots.find(s => s.index === screenshotCpIdx)
+                      }
+                      screenshotCpIdx++
+                    }
+                  }
+                }
+
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 14,
+                      background: 'var(--bg2, #111)', border: '1px solid var(--border)',
+                      borderLeft: `3px solid ${accentColor}`,
+                      borderRadius: 8, padding: '12px 16px',
+                    }}
+                  >
+                    {/* Index badge */}
+                    <div style={{
+                      minWidth: 28, height: 28, borderRadius: '50%',
+                      background: accentColor, color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 11, fontWeight: 700, flexShrink: 0,
+                    }}>
+                      {i + 1}
+                    </div>
+
+                    {/* Content */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 14 }}>{icon}</span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                          letterSpacing: '0.6px', color: accentColor,
+                        }}>{typeLabel}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {cp.label}
+                        </span>
+                      </div>
+
+                      {isConsole && (
+                        <div style={{
+                          fontFamily: 'monospace', fontSize: 11,
+                          background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)',
+                          borderRadius: 4, padding: '4px 8px', color: '#a78bfa',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {(cp as any).logMessage?.slice(0, 120) ?? ''}
+                        </div>
+                      )}
+
+                      {isNetwork && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{
+                            fontFamily: 'monospace', fontSize: 10, fontWeight: 700,
+                            background: 'rgba(8,145,178,0.15)', color: '#22d3ee',
+                            border: '1px solid rgba(8,145,178,0.3)',
+                            borderRadius: 3, padding: '2px 6px',
+                          }}>
+                            {(cp as any).networkMethod}
+                          </span>
+                          <span style={{
+                            fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
+                          }}>
+                            {(cp as any).networkUrl?.replace(/^https?:\/\/[^/]+/, '') ?? (cp as any).networkUrl}
+                          </span>
+                          {(cp as any).networkStatus != null && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, borderRadius: 3, padding: '2px 6px',
+                              background: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
+                                ? 'rgba(22,163,74,0.15)' : 'rgba(220,38,38,0.15)',
+                              color: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
+                                ? '#4ade80' : '#f87171',
+                              border: `1px solid ${(cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
+                                ? 'rgba(22,163,74,0.3)' : 'rgba(220,38,38,0.3)'}`,
+                            }}>
+                              {(cp as any).networkStatus}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {isScreenshot && thumb && (
+                        <img
+                          src={thumb.dataUrl}
+                          alt={cp.label}
+                          onClick={() => setSelectedImg(thumb!)}
+                          style={{
+                            marginTop: 8, height: 72, borderRadius: 6,
+                            border: '1px solid var(--border)', cursor: 'pointer',
+                            objectFit: 'cover', display: 'block',
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           )}
 

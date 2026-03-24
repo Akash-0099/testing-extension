@@ -76,6 +76,7 @@
         style.id = "__wf_play_style__";
         style.textContent = `
           @keyframes __wf_play_pulse__ {0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.8)}}
+          @keyframes __wf_waiting_dots__ {0%,80%,100%{opacity:0.2}40%{opacity:1}}
           #__wf_stop_btn__:hover { background: rgba(220,38,38,0.9) !important; }
         `;
         document.head.appendChild(style);
@@ -246,6 +247,64 @@
     setTimeout(() => badge.remove(), 1200);
   }
 
+  /**
+   * Renders a "waiting for checkpoint" sub-row inside the HUD.
+   *
+   * Strategy:
+   * Appended below the step text while the service worker's async watcher is running
+   * (waiting for a specific console.log message or XHR call to appear). Cleared by
+   * clearWaitingState() as soon as PLAYBACK_HUD_UPDATE or PLAYBACK_CHECKPOINT_FLASH
+   * arrives, signalling the wait is over.
+   */
+  const WAITING_ROW_ID = "__wf_hud_waiting__";
+
+  function showWaitingState(checkpointType, label, detail) {
+    const hud = document.getElementById(HUD_ID);
+    if (!hud) return;
+
+    clearWaitingState();
+
+    const row = document.createElement("div");
+    row.id = WAITING_ROW_ID;
+
+    const isConsole = checkpointType === "console";
+    const accentColor = isConsole ? "#a78bfa" : "#22d3ee";
+    const icon = isConsole ? "💻" : "🌐";
+
+    row.style.cssText = `
+      margin-top: 6px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      background: ${isConsole ? "rgba(124,58,237,0.15)" : "rgba(8,145,178,0.15)"};
+      border: 1px solid ${isConsole ? "rgba(124,58,237,0.35)" : "rgba(8,145,178,0.35)"};
+      font-size: 11px;
+      color: ${accentColor};
+      line-height: 1.4;
+    `;
+
+    // Animated dots
+    const dots = `<span style="display:inline-flex;gap:2px;vertical-align:middle;">
+      <span style="animation:__wf_waiting_dots__ 1.2s 0.0s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
+      <span style="animation:__wf_waiting_dots__ 1.2s 0.2s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
+      <span style="animation:__wf_waiting_dots__ 1.2s 0.4s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
+    </span>`;
+
+    const truncDetail = detail ? detail.slice(0, 60) + (detail.length > 60 ? "…" : "") : "";
+    row.innerHTML = `<span style="font-weight:700;">${icon} Waiting${dots}</span><div style="margin-top:3px;opacity:0.8;font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${truncDetail}</div>`;
+
+    // Insert before the stop button so it stays above it
+    const stopBtn = document.getElementById("__wf_stop_btn__");
+    if (stopBtn) {
+      hud.insertBefore(row, stopBtn);
+    } else {
+      hud.appendChild(row);
+    }
+  }
+
+  function clearWaitingState() {
+    document.getElementById(WAITING_ROW_ID)?.remove();
+  }
+
   // ─── Message listener ──────────────────────────────────────────────────────
 
   /**
@@ -261,21 +320,30 @@
       try {
         switch (msg.type) {
           case "PLAYBACK_HUD_UPDATE":
+            clearWaitingState();
             showHUD(msg.label, msg.progress, msg.total);
             sendResponse({ ok: true });
             break;
 
           case "PLAYBACK_CHECKPOINT_FLASH":
+            clearWaitingState();
             showCheckpointFlash(msg.label);
             sendResponse({ ok: true });
             break;
 
+          case "PLAYBACK_WAITING_CHECKPOINT":
+            showWaitingState(msg.checkpointType, msg.label, msg.detail);
+            sendResponse({ ok: true });
+            break;
+
           case "PLAYBACK_HUD_FAIL":
+            clearWaitingState();
             showFailureHUD(msg.reason);
             sendResponse({ ok: true });
             break;
 
           case "PLAYBACK_HUD_HIDE":
+            clearWaitingState();
             hideHUD();
             sendResponse({ ok: true });
             break;

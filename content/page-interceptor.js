@@ -2,21 +2,15 @@
  * Page Interceptor — MAIN world
  *
  * Strategy:
- * Injected into the page's MAIN JavaScript context (not the isolated content-script
- * sandbox) via `chrome.scripting.executeScript` with `world: "MAIN"`. This allows
- * the script to intercept the page's own `console.log` calls and `fetch` / XHR
- * network requests, which are invisible to ISOLATED-world content scripts.
+ * Injected into the page's MAIN JavaScript context via `chrome.scripting.executeScript`
+ * with `world: "MAIN"`. Intercepts `console.log` calls, which are invisible to ISOLATED-world
+ * content scripts, and forwards them via `window.postMessage` to recorder.js.
  *
- * Captured events are forwarded to the ISOLATED world (recorder.js) via
- * `window.postMessage` using the sentinel key `__wfSrc: '__wf_interceptor__'`.
- * recorder.js then relays them to the service worker.
+ * Network calls (XHR/fetch) are captured independently by the service worker using
+ * `chrome.webRequest`, which works at the browser level regardless of injection timing.
  *
- * The `window.__wfRecording` flag controls whether events are actually posted;
- * it is set to `true` on injection and `false` when recording stops.
- *
- * A `window.__wfInterceptorsInstalled` guard prevents double-patching on
- * re-injection (e.g. when `activateTabRecorder` fires again after a SPA
- * navigation that didn't trigger a full page reload).
+ * The `window.__wfRecording` flag gates whether captured events are actually posted.
+ * The `window.__wfInterceptorsInstalled` guard prevents double-patching on re-injection.
  */
 
 (function () {
@@ -55,71 +49,7 @@
     );
   };
 
-  // ─── fetch interception ─────────────────────────────────────────────────────
-
-  const _origFetch = window.fetch;
-  if (typeof _origFetch === "function") {
-    window.fetch = function (input, init) {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof Request
-          ? input.url
-          : String(input);
-      const method = (
-        (init && init.method) ||
-        (input instanceof Request && input.method) ||
-        "GET"
-      ).toUpperCase();
-
-      const promise = _origFetch.apply(window, [input, init]);
-
-      promise
-        .then((response) => {
-          if (!window.__wfRecording) return;
-          window.postMessage(
-            {
-              __wfSrc: "__wf_interceptor__",
-              type: "network_call",
-              url,
-              method,
-              status: response.status,
-              timestamp: Date.now(),
-            },
-            "*"
-          );
-        })
-        .catch(() => {});
-
-      return promise;
-    };
-  }
-
-  // ─── XMLHttpRequest interception ────────────────────────────────────────────
-
-  const _origOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    this.__wfMethod = (method || "GET").toUpperCase();
-    this.__wfUrl = url || "";
-    return _origOpen.apply(this, arguments);
-  };
-
-  const _origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function () {
-    this.addEventListener("load", () => {
-      if (!window.__wfRecording) return;
-      window.postMessage(
-        {
-          __wfSrc: "__wf_interceptor__",
-          type: "network_call",
-          url: this.__wfUrl,
-          method: this.__wfMethod,
-          status: this.status,
-          timestamp: Date.now(),
-        },
-        "*"
-      );
-    });
-    return _origSend.apply(this, arguments);
-  };
+  // Network calls are now captured via chrome.webRequest in the service worker,
+  // which intercepts at the browser level regardless of injection timing.
+  // XHR/fetch prototype patching is no longer needed here.
 })();

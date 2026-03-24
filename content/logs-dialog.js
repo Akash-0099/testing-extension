@@ -373,18 +373,32 @@
           label
         });
       }
-      
+
+      // Keep the dialog open so the user can add more checkpoints.
+      // Just reset the selection and input, and show brief inline feedback.
       input.value = "";
       DIALOGS[type].selected = null;
-      hideDialog(type);
-      
-      const action = type === "console" ? "CLOSE_CONSOLE_DIALOG" : "CLOSE_NETWORK_DIALOG";
-      chrome.runtime.sendMessage({ type: action }).catch(() => {});
-      
+
+      // Deselect highlighted row
+      const list = document.getElementById(DIALOGS[type].id)?.querySelector(".__wf_logs_list__");
+      if (list) {
+        list.querySelectorAll(".__wf_logs_item__--selected").forEach(el => el.classList.remove("__wf_logs_item__--selected"));
+      }
+
+      btn.textContent = "Checkpoint Added!";
+      btn.style.background = "#16a34a";
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = "Add Checkpoint";
+        btn.style.background = "";
+        btn.disabled = true; // stays disabled until a new item is selected
+      }, 1500);
+      return;
+
     } catch (err) {
       console.warn("Failed to add checkpoint:", err);
     }
-    
+
     btn.textContent = "Add Checkpoint";
   }
 
@@ -395,20 +409,31 @@
       if (msg.type === "SYNC_DIALOG_STATE") {
         if (msg.consoleOpen) showDialog("console");
         else hideDialog("console");
-        
+
         if (msg.networkOpen) showDialog("network");
         else hideDialog("network");
-        
+
+        sendResponse({ ok: true });
+      } else if (msg.type === "NETWORK_CALL_LIVE") {
+        DIALOGS.network.items.push(msg.call);
+        const dialog = document.getElementById(DIALOGS.network.id);
+        if (dialog && dialog.style.display === "flex") {
+          renderList("network");
+          const body = dialog.querySelector(".__wf_logs_list__")?.parentElement;
+          if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 50) {
+            body.scrollTop = body.scrollHeight;
+          }
+        }
         sendResponse({ ok: true });
       }
     } catch (e) {}
     return false;
   });
 
-  // REAL-TIME logs
+  // Real-time console log updates via postMessage from page-interceptor.js (MAIN world).
   window.addEventListener("message", (e) => {
     if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
-    
+
     if (e.data.type === "console_log") {
       DIALOGS.console.items.push({
         message: e.data.message,
@@ -421,26 +446,12 @@
         renderList("console");
         const body = dialog.querySelector(".__wf_logs_list__")?.parentElement;
         if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 50) {
-           body.scrollTop = body.scrollHeight;
-        }
-      }
-    } else if (e.data.type === "network_call") {
-      DIALOGS.network.items.push({
-        url: e.data.url,
-        method: e.data.method,
-        status: e.data.status,
-        timestamp: e.data.timestamp,
-      });
-
-      const dialog = document.getElementById(DIALOGS.network.id);
-      if (dialog && dialog.style.display === "flex") {
-        renderList("network");
-        const body = dialog.querySelector(".__wf_logs_list__")?.parentElement;
-        if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 50) {
-           body.scrollTop = body.scrollHeight;
+          body.scrollTop = body.scrollHeight;
         }
       }
     }
+    // network_call postMessages are no longer sent — network capture is handled via
+    // chrome.webRequest in the service worker, which sends NETWORK_CALL_LIVE messages.
   });
 
 })();

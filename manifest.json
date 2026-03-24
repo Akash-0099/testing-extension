@@ -9,7 +9,8 @@
     "scripting",
     "storage",
     "downloads",
-    "webNavigation"
+    "webNavigation",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>",
