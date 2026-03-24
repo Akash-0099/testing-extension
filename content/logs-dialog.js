@@ -1,8 +1,8 @@
 /**
  * Content Script - Logs Dialog Overlay
  *
- * Injects a resizable, draggable UI overlay for selecting Console and Network logs.
- * It listens for incoming logs in real-time and fetches history from the SW.
+ * Injects resizable, draggable UI overlays for Console and Network logs.
+ * They run independently and can be onscreen at the same time.
  */
 
 (function () {
@@ -11,24 +11,27 @@
   if (window.__workflowLogsDialogLoaded) return;
   window.__workflowLogsDialogLoaded = true;
 
-  const DIALOG_ID = "__wf_logs_dialog__";
-  let activeTab = "console"; // "console" | "network"
-  let consoleLogs = [];
-  let networkCalls = [];
-  let selectedLog = null;
-  let selectedCall = null;
+  const DIALOGS = {
+    console: { id: "__wf_console_dialog__", title: "Console Logs", items: [], selected: null },
+    network: { id: "__wf_network_dialog__", title: "Network Calls", items: [], selected: null }
+  };
 
-  // ─── UI Construction ────────────────────────────────────────────────────────
+  // ─── Dialog Factory ───────────────────────────────────────────────────────
 
-  function createDialog() {
-    if (document.getElementById(DIALOG_ID)) return;
+  function createDialog(type) {
+    const config = DIALOGS[type];
+    if (document.getElementById(config.id)) return document.getElementById(config.id);
 
     const dialog = document.createElement("div");
-    dialog.id = DIALOG_ID;
+    dialog.id = config.id;
+    // Offset network dialog slightly so they don't exactly overlap on first open
+    const topPx = type === "console" ? 50 : 100;
+    const rightPx = type === "console" ? 50 : 80;
+
     dialog.style.cssText = `
       position: fixed;
-      top: 50px;
-      right: 50px;
+      top: ${topPx}px;
+      right: ${rightPx}px;
       width: 400px;
       height: 500px;
       min-width: 300px;
@@ -46,12 +49,10 @@
       resize: both;
       transition: opacity 0.2s ease;
     `;
-    // Hidden by default
     dialog.style.display = "none";
 
-    // Header (Draggable)
+    // Header
     const header = document.createElement("div");
-    header.id = "__wf_logs_header__";
     header.style.cssText = `
       padding: 12px 16px;
       background: #1f2937;
@@ -64,9 +65,8 @@
     `;
     
     const title = document.createElement("div");
-    title.id = "__wf_logs_title__";
     title.style.cssText = "font-weight: 600; font-size: 14px; color: #e5e7eb;";
-    title.textContent = "Logs / Network Checks";
+    title.textContent = config.title;
 
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "×";
@@ -80,20 +80,27 @@
       padding: 0;
     `;
     closeBtn.onclick = () => {
-      hideDialog();
-      chrome.runtime.sendMessage({ type: "CLOSE_LOGS_DIALOG" }).catch(() => {});
+      dialog.style.display = "none";
+      const action = type === "console" ? "CLOSE_CONSOLE_DIALOG" : "CLOSE_NETWORK_DIALOG";
+      chrome.runtime.sendMessage({ type: action }).catch(() => {});
     };
 
     header.appendChild(title);
     header.appendChild(closeBtn);
 
-    // Make Draggable
+    // Draggable Logic
     let isDragging = false;
     let dragStartX, dragStartY, initialLeft, initialTop;
 
     header.addEventListener("mousedown", (e) => {
       isDragging = true;
       header.style.cursor = "grabbing";
+      dialog.style.zIndex = "2147483648"; // Bring to front
+      // lower other dialog
+      const otherType = type === "console" ? "network" : "console";
+      const otherDialog = document.getElementById(DIALOGS[otherType].id);
+      if (otherDialog) otherDialog.style.zIndex = "2147483647";
+
       dragStartX = e.clientX;
       dragStartY = e.clientY;
       const rect = dialog.getBoundingClientRect();
@@ -107,7 +114,7 @@
       const dy = e.clientY - dragStartY;
       dialog.style.left = `${initialLeft + dx}px`;
       dialog.style.top = `${initialTop + dy}px`;
-      dialog.style.right = "auto"; // Override right since we are using left/top
+      dialog.style.right = "auto";
     });
 
     document.addEventListener("mouseup", () => {
@@ -115,7 +122,7 @@
       header.style.cursor = "grab";
     });
 
-    // Content area
+    // Body
     const body = document.createElement("div");
     body.style.cssText = `
       flex: 1;
@@ -126,7 +133,7 @@
     `;
     
     const listContainer = document.createElement("div");
-    listContainer.id = "__wf_logs_list__";
+    listContainer.className = "__wf_logs_list__";
     listContainer.style.cssText = "display: flex; flex-direction: column;";
 
     body.appendChild(listContainer);
@@ -146,7 +153,7 @@
     inputWrap.style.cssText = "display: flex; gap: 8px;";
 
     const labelInput = document.createElement("input");
-    labelInput.id = "__wf_logs_label_input__";
+    labelInput.className = "__wf_logs_label_input__";
     labelInput.type = "text";
     labelInput.placeholder = "Checkpoint label (optional)";
     labelInput.style.cssText = `
@@ -159,11 +166,9 @@
       font-size: 13px;
       outline: none;
     `;
-    labelInput.addEventListener("focus", () => labelInput.style.borderColor = "#3b82f6");
-    labelInput.addEventListener("blur", () => labelInput.style.borderColor = "#4b5563");
 
     const addBtn = document.createElement("button");
-    addBtn.id = "__wf_logs_add_btn__";
+    addBtn.className = "__wf_logs_add_btn__";
     addBtn.textContent = "Add Checkpoint";
     addBtn.disabled = true;
     addBtn.style.cssText = `
@@ -178,7 +183,7 @@
       opacity: 0.5;
       transition: background 0.2s, opacity 0.2s;
     `;
-    addBtn.onclick = handleAddCheckpoint;
+    addBtn.onclick = () => handleAddCheckpoint(type);
 
     inputWrap.appendChild(labelInput);
     inputWrap.appendChild(addBtn);
@@ -189,31 +194,35 @@
     dialog.appendChild(footer);
 
     document.body.appendChild(dialog);
+    return dialog;
   }
 
   // ─── Rendering ────────────────────────────────────────────────────────────
 
-  function renderList() {
-    const list = document.getElementById("__wf_logs_list__");
+  function renderList(type) {
+    const dialog = document.getElementById(DIALOGS[type].id);
+    if (!dialog) return;
+
+    const list = dialog.querySelector(".__wf_logs_list__");
     if (!list) return;
 
     list.innerHTML = "";
 
-    const items = activeTab === "console" ? consoleLogs : networkCalls;
+    const items = DIALOGS[type].items;
+    const selected = DIALOGS[type].selected;
 
     if (items.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = activeTab === "console" ? "No console logs captured." : "No network calls captured.";
+      empty.textContent = type === "console" ? "No console logs captured." : "No network calls captured.";
       empty.style.cssText = "padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; font-style: italic;";
       list.appendChild(empty);
-      updateFooterState();
+      updateFooterState(type);
       return;
     }
 
     items.forEach((item, index) => {
       const row = document.createElement("div");
-      
-      const isSelected = activeTab === "console" ? (selectedLog === item) : (selectedCall === item);
+      const isSelected = (selected === item);
       
       row.style.cssText = `
         padding: 8px 12px;
@@ -232,20 +241,20 @@
       row.onmouseout = () => { if (!isSelected) row.style.background = "transparent"; };
 
       row.onclick = () => {
-        if (activeTab === "console") selectedLog = item;
-        else selectedCall = item;
-        renderList();
+        DIALOGS[type].selected = item;
+        renderList(type);
       };
 
       const time = new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-      if (activeTab === "console") {
+      if (type === "console") {
         const badge = document.createElement("span");
         badge.textContent = "LOG";
         badge.style.cssText = "font-size: 10px; font-weight: 600; padding: 2px 4px; border-radius: 4px; background: #374151; color: #d1d5db; flex-shrink: 0;";
         
+        const messageStr = String(item.message || "");
         const msg = document.createElement("span");
-        msg.textContent = item.message.length > 100 ? item.message.slice(0, 98) + "…" : item.message;
+        msg.textContent = messageStr.length > 100 ? messageStr.slice(0, 98) + "…" : messageStr;
         msg.style.cssText = "flex: 1; color: #e5e7eb;";
 
         const timeNode = document.createElement("span");
@@ -256,12 +265,14 @@
         row.appendChild(msg);
         row.appendChild(timeNode);
       } else {
+        const methodStr = String(item.method || "GET");
         const method = document.createElement("span");
-        method.textContent = item.method;
+        method.textContent = methodStr;
         method.style.cssText = "font-size: 10px; font-weight: 600; padding: 2px 4px; border-radius: 4px; background: #3b82f6; color: #fff; flex-shrink: 0;";
 
+        const urlStr = String(item.url || "unknown");
         const urlInfo = document.createElement("span");
-        urlInfo.textContent = item.url.length > 80 ? "…" + item.url.slice(-78) : item.url;
+        urlInfo.textContent = urlStr.length > 80 ? "…" + urlStr.slice(-78) : urlStr;
         urlInfo.style.cssText = "flex: 1; color: #e5e7eb;";
 
         const statusColor = item.status >= 400 ? "#ef4444" : item.status >= 300 ? "#f59e0b" : "#10b981";
@@ -282,14 +293,17 @@
       list.appendChild(row);
     });
 
-    updateFooterState();
+    updateFooterState(type);
   }
 
-  function updateFooterState() {
-    const btn = document.getElementById("__wf_logs_add_btn__");
+  function updateFooterState(type) {
+    const dialog = document.getElementById(DIALOGS[type].id);
+    if (!dialog) return;
+
+    const btn = dialog.querySelector(".__wf_logs_add_btn__");
     if (!btn) return;
 
-    const hasSelection = activeTab === "console" ? !!selectedLog : !!selectedCall;
+    const hasSelection = !!DIALOGS[type].selected;
     
     if (hasSelection) {
       btn.disabled = false;
@@ -304,67 +318,68 @@
 
   // ─── Core Logic & Interactivity ───────────────────────────────────────────
 
-  function showDialog(tabType) {
-    createDialog();
-    activeTab = tabType;
-    document.getElementById("__wf_logs_title__").textContent = tabType === 'console' ? "Console Logs" : "Network Calls";
-    const dialog = document.getElementById(DIALOG_ID);
+  function showDialog(type) {
+    const dialog = createDialog(type);
     dialog.style.display = "flex";
+    dialog.style.zIndex = "2147483648"; // active one on top
+    
+    const otherType = type === "console" ? "network" : "console";
+    const otherDialog = document.getElementById(DIALOGS[otherType].id);
+    if (otherDialog) otherDialog.style.zIndex = "2147483647";
     
     // Fetch latest state from Service Worker specific to this tab
-    chrome.runtime.sendMessage({ type: tabType === "console" ? "GET_CONSOLE_LOGS" : "GET_NETWORK_CALLS" }, (res) => {
+    chrome.runtime.sendMessage({ type: type === "console" ? "GET_CONSOLE_LOGS" : "GET_NETWORK_CALLS" }, (res) => {
       if (chrome.runtime.lastError) return;
-      if (tabType === "console") {
-        consoleLogs = res?.logs || [];
-      } else {
-        networkCalls = res?.calls || [];
-      }
-      renderList();
+      DIALOGS[type].items = (type === "console" ? res?.logs : res?.calls) || [];
+      renderList(type);
       
       // Auto-scroll to bottom on open
       setTimeout(() => {
-        const body = document.getElementById("__wf_logs_list__")?.parentElement;
+        const listContainer = dialog.querySelector(".__wf_logs_list__");
+        const body = listContainer?.parentElement;
         if (body) body.scrollTop = body.scrollHeight;
       }, 50);
     });
   }
 
-  function hideDialog() {
-    const dialog = document.getElementById(DIALOG_ID);
+  function hideDialog(type) {
+    const dialog = document.getElementById(DIALOGS[type].id);
     if (dialog) dialog.style.display = "none";
   }
 
-  async function handleAddCheckpoint() {
-    const input = document.getElementById("__wf_logs_label_input__");
+  async function handleAddCheckpoint(type) {
+    const dialog = document.getElementById(DIALOGS[type].id);
+    const input = dialog.querySelector(".__wf_logs_label_input__");
     const label = input.value.trim() || null;
-    const btn = document.getElementById("__wf_logs_add_btn__");
+    const btn = dialog.querySelector(".__wf_logs_add_btn__");
+    const selected = DIALOGS[type].selected;
+
     btn.textContent = "Saving...";
     btn.disabled = true;
 
     try {
-      if (activeTab === "console" && selectedLog) {
+      if (type === "console" && selected) {
         await chrome.runtime.sendMessage({
           type: "ADD_CONSOLE_CHECKPOINT",
-          logMessage: selectedLog.message,
+          logMessage: selected.message,
           label
         });
-      } else if (activeTab === "network" && selectedCall) {
+      } else if (type === "network" && selected) {
         await chrome.runtime.sendMessage({
           type: "ADD_NETWORK_CHECKPOINT",
-          networkUrl: selectedCall.url,
-          networkMethod: selectedCall.method,
-          networkStatus: selectedCall.status,
+          networkUrl: selected.url,
+          networkMethod: selected.method,
+          networkStatus: selected.status,
           label
         });
       }
       
-      // Cleanup UI
       input.value = "";
-      selectedLog = null;
-      selectedCall = null;
-      hideDialog();
-      // Notify background to clear state
-      chrome.runtime.sendMessage({ type: "CLOSE_LOGS_DIALOG" }).catch(() => {});
+      DIALOGS[type].selected = null;
+      hideDialog(type);
+      
+      const action = type === "console" ? "CLOSE_CONSOLE_DIALOG" : "CLOSE_NETWORK_DIALOG";
+      chrome.runtime.sendMessage({ type: action }).catch(() => {});
       
     } catch (err) {
       console.warn("Failed to add checkpoint:", err);
@@ -375,53 +390,52 @@
 
   // ─── Listeners ────────────────────────────────────────────────────────────
 
-  // 1. Listen for runtime messages (visibility toggles & syncs)
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       if (msg.type === "SYNC_DIALOG_STATE") {
         if (msg.consoleOpen) showDialog("console");
-        else if (msg.networkOpen) showDialog("network");
-        else hideDialog();
+        else hideDialog("console");
+        
+        if (msg.networkOpen) showDialog("network");
+        else hideDialog("network");
+        
         sendResponse({ ok: true });
       }
     } catch (e) {}
     return false;
   });
 
-  // 2. Listen for REAL-TIME logs from page-interceptor.js in the SAME tab
+  // REAL-TIME logs
   window.addEventListener("message", (e) => {
     if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
     
-    const dialog = document.getElementById(DIALOG_ID);
-    const isVisible = dialog && dialog.style.display === "flex";
-    
-    // Only bother updating DOM if the dialog is currently on screen
-    if (!isVisible) return;
-
     if (e.data.type === "console_log") {
-      consoleLogs.push({
+      DIALOGS.console.items.push({
         message: e.data.message,
         timestamp: e.data.timestamp,
         url: window.location.href,
       });
-      if (activeTab === "console") {
-        renderList();
-        const body = document.getElementById("__wf_logs_list__")?.parentElement;
-        // Auto-scroll logic if user hasn't scrolled up manually
+
+      const dialog = document.getElementById(DIALOGS.console.id);
+      if (dialog && dialog.style.display === "flex") {
+        renderList("console");
+        const body = dialog.querySelector(".__wf_logs_list__")?.parentElement;
         if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 50) {
            body.scrollTop = body.scrollHeight;
         }
       }
     } else if (e.data.type === "network_call") {
-      networkCalls.push({
+      DIALOGS.network.items.push({
         url: e.data.url,
         method: e.data.method,
         status: e.data.status,
         timestamp: e.data.timestamp,
       });
-      if (activeTab === "network") {
-        renderList();
-        const body = document.getElementById("__wf_logs_list__")?.parentElement;
+
+      const dialog = document.getElementById(DIALOGS.network.id);
+      if (dialog && dialog.style.display === "flex") {
+        renderList("network");
+        const body = dialog.querySelector(".__wf_logs_list__")?.parentElement;
         if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 50) {
            body.scrollTop = body.scrollHeight;
         }

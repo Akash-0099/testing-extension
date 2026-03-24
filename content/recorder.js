@@ -481,12 +481,67 @@
    */
   function showRecordingIndicator() {
     if (document.getElementById(INDICATOR_ID)) return;
-    const el = document.createElement("div");
-    el.id = INDICATOR_ID;
-    el.style.cssText = `
+    
+    // Main Container
+    const container = document.createElement("div");
+    container.id = INDICATOR_ID;
+    container.style.cssText = `
       position:fixed;top:12px;right:12px;z-index:2147483647;
-      background:rgba(220,38,38,0.92);color:#fff;
+      display:flex;flex-direction:column;align-items:flex-end;gap:8px;
       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    `;
+
+    // Control Cluster
+    const btnCluster = document.createElement("div");
+    btnCluster.style.cssText = "display:flex;gap:6px;";
+
+    if (!document.getElementById("__wf_blink_style__")) {
+      const s = document.createElement("style");
+      s.id = "__wf_blink_style__";
+      s.textContent = `
+        @keyframes __wf_blink__{0%,100%{opacity:1}50%{opacity:0.2}}
+        .__wf_hud_btn__{
+          background:#1f2937;color:#f3f4f6;border:1px solid #374151;
+          padding:6px 12px;border-radius:6px;font-size:12px;font-weight:500;
+          cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.3);transition:background 0.15s;
+        }
+        .__wf_hud_btn__:hover{background:#374151;}
+      `;
+      document.head.appendChild(s);
+    }
+
+    const btnScreenshot = document.createElement("button");
+    btnScreenshot.className = "__wf_hud_btn__";
+    btnScreenshot.textContent = "📸 Screenshot";
+    btnScreenshot.onclick = () => {
+      const label = prompt("Enter checkpoint label (optional):");
+      if (label !== null) {
+        chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label }).catch(() => {});
+      }
+    };
+
+    const btnNetwork = document.createElement("button");
+    btnNetwork.className = "__wf_hud_btn__";
+    btnNetwork.textContent = "🌐 Network";
+    btnNetwork.onclick = () => {
+      chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {});
+    };
+
+    const btnConsole = document.createElement("button");
+    btnConsole.className = "__wf_hud_btn__";
+    btnConsole.textContent = "💻 Console";
+    btnConsole.onclick = () => {
+      chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {});
+    };
+
+    btnCluster.appendChild(btnScreenshot);
+    btnCluster.appendChild(btnNetwork);
+    btnCluster.appendChild(btnConsole);
+
+    // REC Badge
+    const recBadge = document.createElement("div");
+    recBadge.style.cssText = `
+      background:rgba(220,38,38,0.92);color:#fff;
       font-size:12px;font-weight:600;padding:5px 10px 5px 8px;
       border-radius:20px;display:flex;align-items:center;gap:6px;
       box-shadow:0 2px 8px rgba(0,0,0,0.3);pointer-events:none;letter-spacing:0.3px;
@@ -496,15 +551,13 @@
       width:8px;height:8px;background:#fff;border-radius:50%;
       animation:__wf_blink__ 1s infinite;flex-shrink:0;
     `;
-    if (!document.getElementById("__wf_blink_style__")) {
-      const s = document.createElement("style");
-      s.id = "__wf_blink_style__";
-      s.textContent = `@keyframes __wf_blink__{0%,100%{opacity:1}50%{opacity:0.2}}`;
-      document.head.appendChild(s);
-    }
-    el.appendChild(dot);
-    el.appendChild(document.createTextNode("REC"));
-    document.body.appendChild(el);
+    recBadge.appendChild(dot);
+    recBadge.appendChild(document.createTextNode("REC"));
+
+    container.appendChild(btnCluster);
+    container.appendChild(recBadge);
+    
+    document.body.appendChild(container);
   }
 
   /**

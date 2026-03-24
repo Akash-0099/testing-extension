@@ -192,21 +192,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case "TOGGLE_CONSOLE_DIALOG":
-      state.dialogState.consoleOpen = true;
-      state.dialogState.networkOpen = false;
+      state.dialogState.consoleOpen = !state.dialogState.consoleOpen;
       broadcastDialogStateToActiveTab();
       sendResponse({ ok: true });
       return false;
 
     case "TOGGLE_NETWORK_DIALOG":
-      state.dialogState.networkOpen = true;
+      state.dialogState.networkOpen = !state.dialogState.networkOpen;
+      broadcastDialogStateToActiveTab();
+      sendResponse({ ok: true });
+      return false;
+
+    case "CLOSE_CONSOLE_DIALOG":
       state.dialogState.consoleOpen = false;
       broadcastDialogStateToActiveTab();
       sendResponse({ ok: true });
       return false;
 
-    case "CLOSE_LOGS_DIALOG":
-      state.dialogState.consoleOpen = false;
+    case "CLOSE_NETWORK_DIALOG":
       state.dialogState.networkOpen = false;
       broadcastDialogStateToActiveTab();
       sendResponse({ ok: true });
