@@ -11,7 +11,12 @@
 
   // Prevent double-injection on same page load.
   // Re-initializes if the extension context was invalidated (e.g., after an update).
-  const runtimeConnected = !!(chrome.runtime && chrome.runtime.id);
+  let runtimeConnected = false;
+  try {
+    runtimeConnected = !!(chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    // Context invalidated
+  }
   if (window.__workflowRecorderLoaded && runtimeConnected) {
     return;
   }
@@ -118,10 +123,14 @@
    */
   function sendEvent(eventObj) {
     if (!isRecording) return;
-    chrome.runtime.sendMessage({ type: "RECORD_EVENT", event: eventObj }, () => {
-      // Ignore response or connection errors
-      if (chrome.runtime.lastError) {}
-    });
+    try {
+      chrome.runtime.sendMessage({ type: "RECORD_EVENT", event: eventObj }, () => {
+        // Ignore response or connection errors
+        if (chrome.runtime.lastError) {}
+      });
+    } catch (e) {
+      // Ignore extension context invalidated errors
+    }
   }
 
   /**
@@ -516,27 +525,35 @@
   // Strategy: Subscribes to changes in local storage key 'wfMode' across all pages, ensuring 
   // that a change from the extension popup or background script propagates immediately 
   // to toggle the listeners on this specific active page.
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.wfMode) return;
-    if (changes.wfMode.newValue === "recording") {
-      startListening();
-    } else {
-      stopListening();
-    }
-  });
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      try {
+        if (area !== "local" || !changes.wfMode) return;
+        if (changes.wfMode.newValue === "recording") {
+          startListening();
+        } else {
+          stopListening();
+        }
+      } catch (err) {}
+    });
+  } catch (e) {}
 
   // Strategy: Permits direct point-to-point orchestration from the background worker 
   // without relying on storage sync lag. Useful for direct action triggers.
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.type === "RECORDER_START") { 
-      startListening(); 
-      sendResponse({ ok: true }); 
-    } else if (msg.type === "RECORDER_STOP") { 
-      stopListening(); 
-      sendResponse({ ok: true }); 
-    }
-    return false;
-  });
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      try {
+        if (msg.type === "RECORDER_START") { 
+          startListening(); 
+          sendResponse({ ok: true }); 
+        } else if (msg.type === "RECORDER_STOP") { 
+          stopListening(); 
+          sendResponse({ ok: true }); 
+        }
+      } catch (err) {}
+      return false;
+    });
+  } catch (e) {}
 
   /**
    * Initialization
@@ -545,12 +562,14 @@
 
   // Strategy: Ensures if a tab is refreshed or newly opened while a recording session 
   // is globally active, the script instantly resumes recording by fetching the global state.
-  chrome.storage.local.get("wfMode").then(data => {
-    if (data.wfMode === "recording") {
-      startListening();
-    }
-  }).catch(() => {
-    // Graceful silent failure on init storage fetch
-  });
+  try {
+    chrome.storage.local.get("wfMode").then(data => {
+      if (data.wfMode === "recording") {
+        startListening();
+      }
+    }).catch(() => {
+      // Graceful silent failure on init storage fetch
+    });
+  } catch (e) {}
 
 })();

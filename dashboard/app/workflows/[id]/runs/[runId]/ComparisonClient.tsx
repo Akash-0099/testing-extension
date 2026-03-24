@@ -20,6 +20,10 @@ interface RecordingScreenshot {
 interface Run {
   id: string
   playedAt: string
+  status: string
+  failedEventIndex: number | null
+  failedEventType: string | null
+  failedEventSelector: string | null
   checkpoints: Checkpoint[]
   workflow: {
     id: string
@@ -47,6 +51,8 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
 
   const active = pairs[activeIndex]
   const matchCount = pairs.filter(p => p.recording).length
+  const isFailed = run.status === 'failed'
+  const isPassed = run.status === 'passed'
 
   return (
     <div className="app-shell">
@@ -92,13 +98,46 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
           <div className="breadcrumb" onClick={() => router.push(`/workflows/${workflowId}`)}>
             ← Back to {run.workflow.name}
           </div>
-          <div className="page-title">Checkpoint Comparison</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="page-title">Checkpoint Comparison</div>
+            {isPassed && <span className="badge badge-green">Passed</span>}
+            {isFailed && <span className="badge" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>Failed</span>}
+            {run.status === 'aborted' && <span className="badge" style={{ background: 'var(--bg3)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Aborted</span>}
+          </div>
           <div className="page-subtitle">
             Playback on {fmtDate(run.playedAt)} · {run.checkpoints.length} checkpoints · {matchCount} matched
           </div>
         </div>
 
         <div className="content">
+          {isFailed && (
+            <div style={{
+              background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: 10,
+              padding: '14px 18px',
+              marginBottom: 20,
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 12,
+            }}>
+              <span style={{ fontSize: 18 }}>❌</span>
+              <div>
+                <div style={{ fontWeight: 600, color: '#ef4444', marginBottom: 4 }}>
+                  Test Failed — Step {(run.failedEventIndex ?? 0) + 1}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  Event type: <strong style={{ color: 'var(--text)' }}>{run.failedEventType ?? 'unknown'}</strong>
+                  {run.failedEventSelector && (
+                    <> · Selector: <code style={{ fontSize: 12, background: 'var(--bg3)', padding: '1px 6px', borderRadius: 4 }}>{run.failedEventSelector.slice(0, 80)}</code></>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  The target element could not be found in the page. The workflow stopped at this step.
+                </div>
+              </div>
+            </div>
+          )}
           {pairs.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon">🖼️</div>

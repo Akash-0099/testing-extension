@@ -14,7 +14,12 @@
   // Strategy: Detect stale extension context after reload.
   // If the user navigates or the page reloads, the script prevents re-initialization
   // collisions while ensuring the variables are properly registered.
-  const runtimeConnected = !!(chrome.runtime && chrome.runtime.id);
+  let runtimeConnected = false;
+  try {
+    runtimeConnected = !!(chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    // Context invalidated
+  }
   if (window.__workflowPlayerLoaded && runtimeConnected) return;
   window.__workflowPlayerLoaded = true;
 
@@ -108,10 +113,14 @@
         transition:background 0.15s ease;
       `;
       stopBtn.addEventListener("click", () => {
-        chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" }, () => {
-          void chrome.runtime.lastError;
-        });
-        hideHUD();
+        try {
+          chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" }, () => {
+            void chrome.runtime.lastError;
+          });
+          hideHUD();
+        } catch (e) {
+          // Ignore context invalidated error
+        }
       });
 
       hud.appendChild(titleRow);
@@ -137,6 +146,41 @@
    */
   function hideHUD() {
     document.getElementById(HUD_ID)?.remove();
+  }
+
+  /**
+   * Displays the Failure HUD and auto-removes it after 4 seconds.
+   */
+  function showFailureHUD(reason) {
+    let hud = document.getElementById(HUD_ID);
+    if (!hud) return;
+
+    const titleText = document.getElementById("__wf_hud_title__");
+    if (titleText) {
+      titleText.textContent = "FAILED";
+      titleText.style.color = "#f87171";
+    }
+
+    const dot = hud.querySelector("span");
+    if (dot) {
+      dot.style.background = "#ef4444";
+      dot.style.animation = "none";
+    }
+
+    const stepEl = document.getElementById("__wf_hud_step__");
+    if (stepEl) {
+      stepEl.textContent = reason || "Execution failed on this step.";
+    }
+
+    const barEl = document.getElementById("__wf_hud_bar__");
+    if (barEl) {
+      barEl.style.background = "#ef4444";
+    }
+
+    const stopBtn = document.getElementById("__wf_stop_btn__");
+    if (stopBtn) stopBtn.remove();
+
+    setTimeout(hideHUD, 4000);
   }
 
   /**
@@ -208,27 +252,40 @@
    * progress, trigger camera flashes, or destroy the HUD. Always returns `false` since it operates 
    * synchronously and needs no kept-alive connection.
    */
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    switch (msg.type) {
-      case "PLAYBACK_HUD_UPDATE":
-        showHUD(msg.label, msg.progress, msg.total);
-        sendResponse({ ok: true });
-        break;
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      try {
+        switch (msg.type) {
+          case "PLAYBACK_HUD_UPDATE":
+            showHUD(msg.label, msg.progress, msg.total);
+            sendResponse({ ok: true });
+            break;
 
-      case "PLAYBACK_CHECKPOINT_FLASH":
-        showCheckpointFlash(msg.label);
-        sendResponse({ ok: true });
-        break;
+          case "PLAYBACK_CHECKPOINT_FLASH":
+            showCheckpointFlash(msg.label);
+            sendResponse({ ok: true });
+            break;
 
-      case "PLAYBACK_HUD_HIDE":
-        hideHUD();
-        sendResponse({ ok: true });
-        break;
+          case "PLAYBACK_HUD_FAIL":
+            showFailureHUD(msg.reason);
+            sendResponse({ ok: true });
+            break;
 
-      default:
-        break;
-    }
-    return false;
-  });
+          case "PLAYBACK_HUD_HIDE":
+            hideHUD();
+            sendResponse({ ok: true });
+            break;
+
+          default:
+            break;
+        }
+      } catch (err) {
+        // Catch DOM exceptions when context is invalidated mid-execution
+      }
+      return false;
+    });
+  } catch (e) {
+    // Context invalidated during registration
+  }
 
 })();

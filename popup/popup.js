@@ -21,6 +21,20 @@ const btnRecord         = document.getElementById("btnRecord");
 const btnOpenDashboard  = document.getElementById("btnOpenDashboard");
 const loadedWorkflowName = document.getElementById("loadedWorkflowName");
 const btnPlay           = document.getElementById("btnPlay");
+const playBufferSeconds = document.getElementById("playBufferSeconds");
+
+// Load saved config
+chrome.storage.local.get(["playBufferSeconds"], (res) => {
+  if (res.playBufferSeconds !== undefined) {
+    playBufferSeconds.value = res.playBufferSeconds;
+  }
+});
+
+// Save on change
+playBufferSeconds.addEventListener("change", () => {
+  const val = parseInt(playBufferSeconds.value) ?? 8;
+  chrome.storage.local.set({ playBufferSeconds: Math.max(0, val) });
+});
 
 // Load source tabs
 const tabFromFile       = document.getElementById("tabFromFile");
@@ -48,6 +62,8 @@ const recDuration       = document.getElementById("recDuration");
 const checkpointLabel   = document.getElementById("checkpointLabel");
 const btnCheckpoint     = document.getElementById("btnCheckpoint");
 const btnStopRecording  = document.getElementById("btnStopRecording");
+const btnRestartRecording = document.getElementById("btnRestartRecording");
+const btnDiscardRecording = document.getElementById("btnDiscardRecording");
 const checkpointThumbsRec = document.getElementById("checkpointThumbsRec");
 
 // Playing
@@ -163,6 +179,40 @@ btnStopRecording.addEventListener("click", async () => {
   // Service worker automatically calls saveToDashboard — just notify the user.
   showToast("✅ Workflow saved to Dashboard!", "success");
   showPanel("idle");
+});
+
+btnRestartRecording.addEventListener("click", async () => {
+  btnRestartRecording.disabled = true;
+  const res = await sendToSW({ type: "RESTART_RECORDING" });
+  btnRestartRecording.disabled = false;
+
+  if (res?.ok) {
+    recEventCount.textContent = "0";
+    recCheckpointCount.textContent = "0";
+    recDuration.textContent = "0s";
+    checkpointThumbsRec.innerHTML = "";
+    checkpointLabel.value = "";
+    recordingStartTime = Date.now();
+    startDurationTimer();
+    showToast("Recording restarted", "success");
+  } else {
+    showToast("Restart failed: " + (res?.error ?? "unknown"), "error");
+  }
+});
+
+btnDiscardRecording.addEventListener("click", async () => {
+  if (!confirm("Are you sure you want to discard this recording?")) return;
+  btnDiscardRecording.disabled = true;
+  const res = await sendToSW({ type: "DISCARD_RECORDING" });
+  btnDiscardRecording.disabled = false;
+
+  if (res?.ok) {
+    clearInterval(durationTimer);
+    showPanel("idle");
+    showToast("Recording discarded", "success");
+  } else {
+    showToast("Discard failed: " + (res?.error ?? "unknown"), "error");
+  }
 });
 
 // ─── Load source tabs ────────────────────────────────────────────────────────
@@ -400,6 +450,16 @@ chrome.runtime.onMessage.addListener((msg) => {
     case "WORKFLOW_PLAYBACK_COMPLETE":
       showToast(`✅ Completed: ${msg.name}`, "success");
       break;
+
+    case "WORKFLOW_PLAYBACK_FAILED": {
+      const step = msg.failedStep;
+      const stepDesc = step
+        ? `Step ${step.index + 1} (${step.type}${step.selector ? ": " + step.selector.slice(0, 35) : ""})`
+        : "unknown step";
+      showToast(`❌ Failed at ${stepDesc}`, "error");
+      handlePlaybackComplete();
+      break;
+    }
 
     case "QUEUE_COMPLETE":
       playProgressBar.style.width = "100%";

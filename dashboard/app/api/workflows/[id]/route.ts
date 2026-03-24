@@ -13,7 +13,9 @@ export async function GET(
       screenshots: { orderBy: { index: 'asc' } },
       runs: {
         orderBy: { playedAt: 'desc' },
-        include: { _count: { select: { checkpoints: true } } },
+        include: {
+          _count: { select: { checkpoints: true } },
+        },
       },
     },
   })

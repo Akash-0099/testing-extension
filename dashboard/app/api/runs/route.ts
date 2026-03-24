@@ -4,7 +4,15 @@ import { prisma } from '@/lib/prisma'
 // POST /api/runs — create a playback run with its checkpoints
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const { workflowId, playedAt, checkpoints } = body
+  const {
+    workflowId,
+    playedAt,
+    checkpoints,
+    status,
+    failedEventIndex,
+    failedEventType,
+    failedEventSelector,
+  } = body
 
   if (!workflowId) {
     return NextResponse.json({ error: 'workflowId required' }, { status: 400 })
@@ -14,6 +22,10 @@ export async function POST(req: NextRequest) {
     data: {
       workflowId,
       playedAt: playedAt ? new Date(playedAt) : new Date(),
+      status: status ?? 'passed',
+      failedEventIndex: failedEventIndex ?? null,
+      failedEventType: failedEventType ?? null,
+      failedEventSelector: failedEventSelector ?? null,
     },
   })
 

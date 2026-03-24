@@ -14,6 +14,10 @@ interface Screenshot {
 interface Run {
   id: string
   playedAt: string
+  status: string
+  failedEventIndex: number | null
+  failedEventType: string | null
+  failedEventSelector: string | null
   _count: { checkpoints: number }
 }
 
@@ -38,6 +42,8 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
   }
 
   const eventCount = Array.isArray(workflow.events) ? workflow.events.length : 0
+  const passedRuns = workflow.runs.filter(r => r.status === 'passed').length
+  const failedRuns = workflow.runs.filter(r => r.status === 'failed').length
 
   return (
     <div className="app-shell">
@@ -76,8 +82,12 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
               <div className="stat-label">Recording Checkpoints</div>
             </div>
             <div className="stat-card">
-              <div className="stat-val" style={{ color: 'var(--green)' }}>{workflow.runs.length}</div>
-              <div className="stat-label">Playback Runs</div>
+              <div className="stat-val" style={{ color: 'var(--green)' }}>{passedRuns}</div>
+              <div className="stat-label">Passed Runs</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-val" style={{ color: failedRuns > 0 ? 'var(--red, #ef4444)' : 'var(--text-muted)' }}>{failedRuns}</div>
+              <div className="stat-label">Failed Runs</div>
             </div>
             <div className="stat-card">
               <div className="stat-val" style={{ color: 'var(--blue)' }}>{eventCount}</div>
@@ -121,20 +131,42 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
             </div>
           ) : (
             <div className="run-list">
-              {workflow.runs.map(run => (
-                <div
-                  key={run.id}
-                  id={`run-item-${run.id}`}
-                  className="run-item"
-                  onClick={() => router.push(`/workflows/${workflow.id}/runs/${run.id}`)}
-                >
-                  <div className="run-item-left">
-                    <div className="run-item-date">Played {fmtDate(run.playedAt)}</div>
-                    <div className="run-item-count">{run._count.checkpoints} checkpoints captured</div>
+              {workflow.runs.map(run => {
+                const isPassed = run.status === 'passed'
+                const isFailed = run.status === 'failed'
+                const isAborted = run.status === 'aborted'
+                return (
+                  <div
+                    key={run.id}
+                    id={`run-item-${run.id}`}
+                    className="run-item"
+                    onClick={() => router.push(`/workflows/${workflow.id}/runs/${run.id}`)}
+                    style={{ borderLeft: `3px solid ${isFailed ? 'var(--red, #ef4444)' : isPassed ? 'var(--green)' : 'var(--border)'}` }}
+                  >
+                    <div className="run-item-left">
+                      <div className="run-item-date">Played {fmtDate(run.playedAt)}</div>
+                      <div className="run-item-count">{run._count.checkpoints} checkpoints captured</div>
+                      {isFailed && run.failedEventType && (
+                        <div style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4 }}>
+                          Failed at step {(run.failedEventIndex ?? 0) + 1}: {run.failedEventType}
+                          {run.failedEventSelector ? ` — ${run.failedEventSelector.slice(0, 50)}` : ''}
+                        </div>
+                      )}
+                      {isAborted && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                          Stopped manually
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                      {isPassed && <span className="badge badge-green">Passed</span>}
+                      {isFailed && <span className="badge" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}>Failed</span>}
+                      {isAborted && <span className="badge" style={{ background: 'var(--bg3)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Aborted</span>}
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>View →</span>
+                    </div>
                   </div>
-                  <span className="badge badge-green">View Comparison →</span>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

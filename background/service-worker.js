@@ -140,6 +140,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
       return true; // async response — keep message channel open
 
+    case "RESTART_RECORDING":
+      handleRestartRecording(sendResponse);
+      return true;
+
+    case "DISCARD_RECORDING":
+      handleDiscardRecording(sendResponse);
+      return true;
+
     case "ADD_CHECKPOINT":
       handleAddCheckpoint(msg.label, sendResponse);
       return true;
@@ -152,6 +160,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       state.mode = "idle";
       state.workflowsToPlay = [];
       state.workflowToPlay = null;
+      chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab) chrome.tabs.sendMessage(tab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
+      }).catch(() => {});
       broadcastToPopup({ type: "PLAYBACK_STOPPED" });
       sendResponse({ mode: state.mode, eventCount: state.events.length });
       return false;
@@ -190,6 +201,7 @@ async function handleStartRecording(msg, sendResponse) {
   resetState();
   state.mode = "recording";
   state.recordingTabId = msg.tabId ?? null;
+  state.workflowName = msg.name || "";
 
   // 1. Write wfMode="recording" to local storage.
   await setRecordingActive();
@@ -224,6 +236,51 @@ async function handleStopRecording(sendResponse) {
 
   // Auto-save to dashboard (fire-and-forget)
   saveToDashboard(state.events, state.screenshots).catch(e => console.warn('[WFRec] Dashboard save failed:', e));
+}
+
+/**
+ * Restarts the current recording session.
+ *
+ * Strategy:
+ * Clears the currently accumulated events and screenshots, keeping the active 
+ * mode as 'recording' and maintaining the workflow name, so the user can start fresh.
+ */
+async function handleRestartRecording(sendResponse) {
+  if (state.mode !== "recording") {
+    sendResponse({ error: "Not recording" });
+    return;
+  }
+
+  state.events = [];
+  state.screenshots = {};
+  state.screenshotCount = 0;
+
+  await persistEvents();
+
+  sendResponse({ ok: true });
+}
+
+/**
+ * Discards the current recording session without saving.
+ *
+ * Strategy:
+ * Reverts the system to 'idle' mode. Triggers a global teardown by updating storage, 
+ * explicitly messaging all tabs to deactivate their DOM listeners, and skipping the 
+ * dashboard save step.
+ */
+async function handleDiscardRecording(sendResponse) {
+  if (state.mode !== "recording") {
+    sendResponse({ error: "Not recording" });
+    return;
+  }
+
+  state.mode = "idle";
+  state.workflowName = "";
+
+  await setRecordingIdle();
+  await deactivateRecorderOnAllTabs();
+
+  sendResponse({ ok: true });
 }
 
 /**
@@ -451,8 +508,22 @@ async function handleStartPlayback(workflows, sendResponse) {
   state.screenshots = {};
   state.screenshotCount = 0;
 
+  const config = await chrome.storage.local.get(["playBufferSeconds"]);
+  state.playBufferMs = (config.playBufferSeconds !== undefined ? parseInt(config.playBufferSeconds) : 8) * 1000;
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   state.playbackTabId = tab?.id ?? null;
+
+  // Inject player.js dynamically into the active tab to ensure the HUD is ready,
+  // especially if the extension was just reloaded and the tab's old context is dead.
+  if (state.playbackTabId) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: state.playbackTabId },
+        files: ["content/player.js"]
+      });
+    } catch (e) {}
+  }
 
   sendResponse({ ok: true });
   runPlaybackQueue();
@@ -467,18 +538,26 @@ async function handleStartPlayback(workflows, sendResponse) {
  * completion to the popup UI.
  */
 async function runPlaybackQueue() {
+  let anyFailed = false;
   for (let q = 0; q < state.workflowsToPlay.length; q++) {
     state.workflowToPlay = state.workflowsToPlay[q];
     if (state.mode !== "playing") break;
-    await runSinglePlayback();
+    const runStatus = await runSinglePlayback();
+    // Stop the queue on first failure — subsequent workflows would be meaningless.
+    if (runStatus === "failed") {
+      anyFailed = true;
+      break;
+    }
   }
   
   if (state.mode === "playing") {
     state.mode = "idle";
-    try {
-      const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
-    } catch (_) {}
+    if (!anyFailed) {
+      try {
+        const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
+      } catch (_) {}
+    }
     broadcastToPopup({ type: 'QUEUE_COMPLETE' });
   }
 }
@@ -494,36 +573,82 @@ async function runPlaybackQueue() {
  * run's telemetry to the dashboard.
  */
 async function runSinglePlayback() {
-  const events = state.workflowToPlay.events;
+  const workflow = state.workflowToPlay;
+  if (!workflow) return "aborted";
+
+  const events = workflow.events;
   const results = { screenshots: {} };
+  let runStatus = "passed";
+  let failedStep = null;
 
   for (let i = 0; i < events.length; i++) {
-    if (state.mode !== "playing") break;
+    if (state.mode !== "playing") {
+      runStatus = "aborted";
+      break;
+    }
 
     const event = events[i];
     const nextEvent = events[i + 1];
 
     broadcastToPopup({ type: "PLAYBACK_PROGRESS", index: i, total: events.length, event });
 
+    const label = event.type === "checkpoint"
+      ? `📸 ${event.label}`
+      : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
+
     try {
       const [hudTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (hudTab) {
-        const label = event.type === "checkpoint"
-          ? `📸 ${event.label}`
-          : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
-        chrome.tabs.sendMessage(hudTab.id, {
-          type: "PLAYBACK_HUD_UPDATE",
-          label,
-          progress: i + 1,
-          total: events.length,
-        }).catch(() => {});
+        if (event.type === "tab_switch") {
+          chrome.tabs.sendMessage(hudTab.id, { type: "PLAYBACK_HUD_HIDE" }).catch(() => {});
+        } else {
+          chrome.tabs.sendMessage(hudTab.id, {
+            type: "PLAYBACK_HUD_UPDATE",
+            label,
+            progress: i + 1,
+            total: events.length,
+          }).catch(() => {});
+        }
       }
     } catch (_) {}
 
+    let dispatchResult = { ok: true };
     try {
-      await dispatchPlaybackEvent(event, results);
+      dispatchResult = await dispatchPlaybackEvent(event, results, {
+        label,
+        progress: i + 1,
+        total: events.length
+      });
     } catch (err) {
+      dispatchResult = { ok: false, reason: "exception" };
       console.warn("Error dispatching playback event:", event.type, err);
+    }
+
+    if (!dispatchResult.ok) {
+      runStatus = "failed";
+      failedStep = {
+        index: i,
+        type: event.type,
+        selector: event.selector || null,
+        reason: dispatchResult.reason || "unknown",
+      };
+      broadcastToPopup({
+        type: "WORKFLOW_PLAYBACK_FAILED",
+        name: workflow.name || "workflow",
+        failedStep,
+      });
+
+      try {
+        const [hudTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (hudTab) {
+          chrome.tabs.sendMessage(hudTab.id, {
+            type: "PLAYBACK_HUD_FAIL",
+            reason: `Action failed: ${dispatchResult.reason || "unknown error"}`
+          }).catch(() => {});
+        }
+      } catch (_) {}
+
+      break;
     }
 
     if (nextEvent && event.timestamp && nextEvent.timestamp) {
@@ -534,21 +659,24 @@ async function runSinglePlayback() {
     }
   }
 
-  if (state.mode === 'playing') {
-    const exportData = {
-      events: state.workflowToPlay.events,
-      screenshots: results.screenshots,
-      name: state.workflowToPlay.name || 'workflow',
-      playedAt: Date.now(),
-    };
-    
-    broadcastToPopup({ type: 'WORKFLOW_PLAYBACK_COMPLETE', name: exportData.name });
+  const playedAt = Date.now();
+  const workflowName = workflow.name || "workflow";
 
-    if (state.workflowToPlay._dashboardId) {
-      saveRunToDashboard(state.workflowToPlay._dashboardId, results.screenshots, exportData.playedAt)
-        .catch(e => console.warn('[WFRec] Playback run save failed:', e));
-    }
+  if (runStatus === "passed") {
+    broadcastToPopup({ type: "WORKFLOW_PLAYBACK_COMPLETE", name: workflowName });
   }
+
+  if (workflow._dashboardId && runStatus !== "aborted") {
+    saveRunToDashboard(
+      workflow._dashboardId,
+      results.screenshots,
+      playedAt,
+      runStatus,
+      failedStep,
+    ).catch(e => console.warn("[WFRec] Playback run save failed:", e));
+  }
+
+  return runStatus;
 }
 
 // ─── Dashboard sync helpers ───────────────────────────────────────────────────
@@ -562,7 +690,7 @@ async function runSinglePlayback() {
  * to correlate future playback runs to this master template.
  */
 async function saveToDashboard(events, screenshots) {
-  const name = 'recorded-workflow-' + new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const name = state.workflowName || ('recorded-workflow-' + new Date().toISOString().slice(0, 16).replace('T', ' '));
   const screenshotMap = {};
   if (screenshots) {
     for (const [k, v] of Object.entries(screenshots)) {
@@ -587,15 +715,24 @@ async function saveToDashboard(events, screenshots) {
  * Bundles the checkpoints validated during the automated run and posts them against the `workflowId` 
  * to serve as proof-of-work/QA artifacts on the dashboard.
  */
-async function saveRunToDashboard(workflowId, screenshots, playedAt) {
+async function saveRunToDashboard(workflowId, screenshots, playedAt, status = 'passed', failedStep = null) {
   const checkpoints = {};
   for (const [k, v] of Object.entries(screenshots || {})) {
     checkpoints[k] = { dataUrl: v, label: `Checkpoint ${parseInt(k) + 1}` };
   }
+  const body = {
+    workflowId,
+    playedAt,
+    checkpoints,
+    status,
+    failedEventIndex: failedStep?.index ?? null,
+    failedEventType: failedStep?.type ?? null,
+    failedEventSelector: failedStep?.selector ?? null,
+  };
   const res = await fetch(`${DASHBOARD_URL}/api/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workflowId, playedAt, checkpoints }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
@@ -614,7 +751,7 @@ async function saveRunToDashboard(workflowId, screenshots, playedAt) {
  * @param {Object} event - The single event to execute.
  * @param {Object} results - Accumulator for the session's generated metadata (screenshots).
  */
-async function dispatchPlaybackEvent(event, results) {
+async function dispatchPlaybackEvent(event, results, meta) {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   switch (event.type) {
@@ -625,20 +762,27 @@ async function dispatchPlaybackEvent(event, results) {
     case "scroll":
     case "keydown":
     case "input":
-    case "change":
-      if (!activeTab) break;
+    case "change": {
+      if (!activeTab) return { ok: false, reason: "no_active_tab" };
       try {
-        await chrome.scripting.executeScript({
+        const injectionResults = await chrome.scripting.executeScript({
           target: { tabId: activeTab.id },
           func: replayEventInPage,
-          args: [event],
+          args: [event, state.playBufferMs || 8000],
         });
-      } catch (err) {}
-      break;
+        const result = injectionResults?.[0]?.result;
+        if (result && result.ok === false) {
+          return { ok: false, reason: result.reason ?? "element_not_found" };
+        }
+      } catch (err) {
+        return { ok: false, reason: "script_error" };
+      }
+      return { ok: true };
+    }
 
     case "tab_switch":
-      await handlePlaybackTabSwitch(event);
-      break;
+      await handlePlaybackTabSwitch(event, meta);
+      return { ok: true };
 
     case "reload":
       if (activeTab) {
@@ -646,7 +790,7 @@ async function dispatchPlaybackEvent(event, results) {
         await waitForTabLoad(activeTab.id);
         await sleep(800);
       }
-      break;
+      return { ok: true };
 
     case "checkpoint": {
       await sleep(300);
@@ -666,11 +810,11 @@ async function dispatchPlaybackEvent(event, results) {
           chrome.tabs.sendMessage(tab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
         } catch (err) {}
       }
-      break;
+      return { ok: true };
     }
 
     default:
-      break;
+      return { ok: true };
   }
 }
 
@@ -683,7 +827,7 @@ async function dispatchPlaybackEvent(event, results) {
  * the new/switched tab reports `status === "complete"`, preventing race conditions where events trigger 
  * on an empty DOM.
  */
-async function handlePlaybackTabSwitch(event) {
+async function handlePlaybackTabSwitch(event, meta) {
   if (!event.url) return;
 
   try {
@@ -704,6 +848,23 @@ async function handlePlaybackTabSwitch(event) {
       await waitForTabLoad(targetTabId);
     }
     await sleep(800);
+
+    // Inject player.js dynamically into the newly switched tab to ensure the HUD renders
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: targetTabId },
+        files: ["content/player.js"]
+      });
+      if (meta) {
+        chrome.tabs.sendMessage(targetTabId, {
+          type: "PLAYBACK_HUD_UPDATE",
+          label: meta.label,
+          progress: meta.progress,
+          total: meta.total,
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
   } catch (err) {}
 }
 
@@ -744,7 +905,7 @@ function handleStopPlayback(sendResponse) {
 
 async function handleExportWorkflow(sendResponse) {
   const workflow = {
-    name: "recorded-workflow-" + Date.now(),
+    name: state.workflowName || ("recorded-workflow-" + Date.now()),
     recordedAt: Date.now(),
     events: state.events,
     screenshotCount: state.screenshotCount,
@@ -762,6 +923,7 @@ function resetState() {
   state.playbackTabId = null;
   state.workflowToPlay = null;
   state.recordingTabId = null;
+  state.workflowName = "";
 }
 
 function sleep(ms) {
@@ -787,7 +949,51 @@ async function broadcastToPopup(msg) {
  *
  * @param {Object} event - The serialized playback instruction object.
  */
-async function replayEventInPage(event) {
+async function replayEventInPage(event, timeoutMs = 8000) {
+  const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  // Interactive event types that require a target element to succeed.
+  const interactiveTypes = ["click", "right_click", "long_press", "toggle", "input", "change", "keydown"];
+
+  // Test failure check: use the CSS selector as the authoritative signal.
+  // elementFromPoint() is NOT used here — it always returns the topmost element
+  // at those coordinates (body, container, etc.) even when the intended target is
+  // absent, producing false positives that mask real failures.
+  if (interactiveTypes.includes(event.type)) {
+    if (event.selector) {
+      let found = false;
+      let isWaiting = false;
+      const startTime = Date.now();
+      
+      while (Date.now() - startTime < timeoutMs) {
+        try {
+          if (document.querySelector(event.selector)) {
+            found = true;
+            if (isWaiting) {
+              const stepEl = document.getElementById("__wf_hud_step__");
+              if (stepEl && stepEl.dataset.originalText) {
+                stepEl.textContent = stepEl.dataset.originalText;
+              }
+            }
+            break;
+          }
+        } catch (_) {}
+        
+        isWaiting = true;
+        const stepEl = document.getElementById("__wf_hud_step__");
+        if (stepEl) {
+          if (!stepEl.dataset.originalText) stepEl.dataset.originalText = stepEl.textContent;
+          const remaining = Math.ceil((timeoutMs - (Date.now() - startTime)) / 1000);
+          stepEl.textContent = `Waiting for page to load... (${remaining}s)`;
+        }
+        await wait(250);
+      }
+      if (!found) return { ok: false, reason: "element_not_found" };
+    }
+    // No selector recorded → fall through to best-effort coordinate replay below.
+  }
+
+  // Best-effort element resolution for the actual replay dispatch.
+  // Coordinates fallback is intentional here for replay robustness only.
   function getElement(selector, x, y) {
     if (selector) {
       try {
@@ -803,50 +1009,47 @@ async function replayEventInPage(event) {
 
   const el = getElement(event.selector, event.x, event.y);
 
-  if (event.type === "click") {
-    if (el) {
-      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
-      el.focus?.();
-      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
-      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
+  // Guard: interactive events with no resolved element (no selector + bad coordinates)
+  if (interactiveTypes.includes(event.type) && !el) {
+    return { ok: false, reason: "element_not_found" };
+  }
 
-      const isCheckbox = el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio");
-      if (isCheckbox) {
-        const nativeCheckedSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, "checked"
-        )?.set;
-        if (nativeCheckedSetter) {
-          nativeCheckedSetter.call(el, el.type === "radio" ? true : !el.checked);
-        } else {
-          el.checked = el.type === "radio" ? true : !el.checked;
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+  if (event.type === "click") {
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
+    el.focus?.();
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y }));
+
+    const isCheckbox = el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio");
+    if (isCheckbox) {
+      const nativeCheckedSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, "checked"
+      )?.set;
+      if (nativeCheckedSetter) {
+        nativeCheckedSetter.call(el, el.type === "radio" ? true : !el.checked);
+      } else {
+        el.checked = el.type === "radio" ? true : !el.checked;
       }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
     }
   } else if (event.type === "right_click") {
-    if (el) {
-      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
-      el.focus?.();
-      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
-      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
-    }
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
+    el.focus?.();
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 2 }));
   } else if (event.type === "long_press") {
-    if (el) {
-      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
-      el.focus?.();
-      await new Promise(r => setTimeout(r, 600));
-      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
-      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
-    }
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
+    el.focus?.();
+    await new Promise(r => setTimeout(r, 600));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.x, clientY: event.y, button: 0 }));
   } else if (event.type === "toggle") {
-    if (el) {
-       if (el.tagName === "DETAILS") {
-         el.open = event.isOpen !== undefined ? event.isOpen : !el.open;
-         el.dispatchEvent(new Event("toggle", { bubbles: true }));
-       } else {
-         el.dispatchEvent(new Event("toggle", { bubbles: true }));
-       }
+    if (el.tagName === "DETAILS") {
+      el.open = event.isOpen !== undefined ? event.isOpen : !el.open;
+      el.dispatchEvent(new Event("toggle", { bubbles: true }));
+    } else {
+      el.dispatchEvent(new Event("toggle", { bubbles: true }));
     }
   } else if (event.type === "scroll") {
     const target = el || window;
@@ -875,28 +1078,28 @@ async function replayEventInPage(event) {
       }));
     }
   } else if (event.type === "input" || event.type === "change") {
-    if (el) {
-      if (typeof event.value === "boolean" || (el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio"))) {
-        const nativeCheckedSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, "checked"
-        )?.set;
-        const newChecked = typeof event.value === "boolean" ? event.value : !el.checked;
-        if (nativeCheckedSetter) {
-          nativeCheckedSetter.call(el, newChecked);
-        } else {
-          el.checked = newChecked;
-        }
-      } else if ("value" in el) {
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set
-          || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-        if (nativeInputValueSetter) {
-          nativeInputValueSetter.call(el, event.value);
-        } else {
-          el.value = event.value;
-        }
+    if (typeof event.value === "boolean" || (el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio"))) {
+      const nativeCheckedSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, "checked"
+      )?.set;
+      const newChecked = typeof event.value === "boolean" ? event.value : !el.checked;
+      if (nativeCheckedSetter) {
+        nativeCheckedSetter.call(el, newChecked);
+      } else {
+        el.checked = newChecked;
       }
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if ("value" in el) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set
+        || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(el, event.value);
+      } else {
+        el.value = event.value;
+      }
     }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
   }
+
+  return { ok: true };
 }
