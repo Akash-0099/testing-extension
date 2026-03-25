@@ -834,8 +834,12 @@ async function runPlaybackQueue() {
         const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
       } catch (_) {}
+      // Only tell the popup the queue finished cleanly when nothing failed.
+      // WORKFLOW_PLAYBACK_FAILED was already broadcast for the failing workflow,
+      // so the popup already knows — sending QUEUE_COMPLETE on top would overwrite
+      // the error state with a false-success message.
+      broadcastToPopup({ type: 'QUEUE_COMPLETE' });
     }
-    broadcastToPopup({ type: 'QUEUE_COMPLETE' });
   }
 }
 
@@ -1068,8 +1072,12 @@ async function dispatchPlaybackEvent(event, results, meta) {
     }
 
     case "tab_switch":
-      await handlePlaybackTabSwitch(event, meta);
-      return { ok: true };
+      try {
+        await handlePlaybackTabSwitch(event, meta);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: err.message || "tab_switch_failed" };
+      }
 
     case "reload":
       if (activeTab) {
@@ -1259,44 +1267,46 @@ async function dispatchPlaybackEvent(event, results, meta) {
  * on an empty DOM.
  */
 async function handlePlaybackTabSwitch(event, meta) {
-  if (!event.url) return;
+  if (!event.url) throw new Error("No URL provided for tab_switch");
 
+  const tabs = await chrome.tabs.query({});
+  let targetTabId;
+  const match = tabs.find(t => t.url && t.url.startsWith(event.url.split("?")[0]));
+
+  if (match) {
+    await chrome.tabs.update(match.id, { active: true });
+    if (match.windowId) {
+      await chrome.windows.update(match.windowId, { focused: true });
+    }
+    targetTabId = match.id;
+  } else {
+    const newTab = await chrome.tabs.create({ url: event.url });
+    targetTabId = newTab.id;
+  }
+
+  const tabInfo = await chrome.tabs.get(targetTabId);
+  if (tabInfo && tabInfo.status !== "complete") {
+    await waitForTabLoad(targetTabId);
+  }
+  await sleep(800);
+
+  // Inject player.js dynamically into the newly switched tab to ensure the HUD renders
   try {
-    const tabs = await chrome.tabs.query({});
-    let targetTabId;
-    const match = tabs.find(t => t.url && t.url.startsWith(event.url.split("?")[0]));
-
-    if (match) {
-      await chrome.tabs.update(match.id, { active: true });
-      targetTabId = match.id;
-    } else {
-      const newTab = await chrome.tabs.create({ url: event.url });
-      targetTabId = newTab.id;
+    await chrome.scripting.executeScript({
+      target: { tabId: targetTabId },
+      files: ["content/player.js"]
+    });
+    if (meta) {
+      chrome.tabs.sendMessage(targetTabId, {
+        type: "PLAYBACK_HUD_UPDATE",
+        label: meta.label,
+        progress: meta.progress,
+        total: meta.total,
+      }).catch(() => {});
     }
-
-    const tabInfo = await chrome.tabs.get(targetTabId);
-    if (tabInfo && tabInfo.status !== "complete") {
-      await waitForTabLoad(targetTabId);
-    }
-    await sleep(800);
-
-    // Inject player.js dynamically into the newly switched tab to ensure the HUD renders
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: targetTabId },
-        files: ["content/player.js"]
-      });
-      if (meta) {
-        chrome.tabs.sendMessage(targetTabId, {
-          type: "PLAYBACK_HUD_UPDATE",
-          label: meta.label,
-          progress: meta.progress,
-          total: meta.total,
-        }).catch(() => {});
-      }
-    } catch (e) {}
-
-  } catch (err) {}
+  } catch (e) {
+    console.warn("Could not inject player.js after tab switch:", e);
+  }
 }
 
 /**
@@ -1419,47 +1429,168 @@ async function replayEventInPage(event, timeoutMs = 8000) {
   // Interactive event types that require a target element to succeed.
   const interactiveTypes = ["click", "right_click", "long_press", "toggle", "input", "change", "keydown"];
 
-  // Test failure check: use the CSS selector as the authoritative signal.
-  // elementFromPoint() is NOT used here — it always returns the topmost element
-  // at those coordinates (body, container, etc.) even when the intended target is
-  // absent, producing false positives that mask real failures.
+  // Use the CSS selector as the authoritative element signal.
+  // elementFromPoint() is intentionally NOT used as a selector fallback — it always
+  // returns the topmost element at those pixel coordinates (body, container, overlay)
+  // even when the intended target is absent, producing silent false-positives that
+  // mark runs as "passed" even though nothing was actually clicked.
+  //
+  // When a selector is recorded but fails after the full timeout, a relaxed version
+  // is tried by stripping positional :nth-of-type() qualifiers (common cause of
+  // breakage in AngularJS ng-repeat lists after re-renders). If multiple candidates
+  // match the relaxed selector, the one whose centre is closest to the recorded
+  // x/y coordinates is chosen.
+  let resolvedEl = null;
+
   if (interactiveTypes.includes(event.type)) {
     if (event.selector) {
-      let found = false;
       let isWaiting = false;
       const startTime = Date.now();
-      
+
+      // Phase 1 — wait for the exact recorded selector.
+      // Uses querySelectorAll so that when multiple elements match (e.g. a selector
+      // without nth-of-type), the one whose centre is closest to the recorded
+      // click coordinates is chosen rather than blindly taking the first DOM match.
       while (Date.now() - startTime < timeoutMs) {
         try {
-          if (document.querySelector(event.selector)) {
-            found = true;
-            if (isWaiting) {
-              const stepEl = document.getElementById("__wf_hud_step__");
-              if (stepEl && stepEl.dataset.originalText) {
-                stepEl.textContent = stepEl.dataset.originalText;
-              }
+          const matches = Array.from(document.querySelectorAll(event.selector));
+          if (matches.length === 1) {
+            resolvedEl = matches[0];
+            break;
+          } else if (matches.length > 1) {
+            if (event.x !== undefined && event.y !== undefined) {
+              resolvedEl = matches.reduce((best, c) => {
+                const r = c.getBoundingClientRect();
+                const dist = Math.hypot(r.left + r.width / 2 - event.x, r.top + r.height / 2 - event.y);
+                const rb = best.getBoundingClientRect();
+                return dist < Math.hypot(rb.left + rb.width / 2 - event.x, rb.top + rb.height / 2 - event.y) ? c : best;
+              });
+            } else {
+              resolvedEl = matches[0];
             }
             break;
           }
         } catch (_) {}
-        
+
         isWaiting = true;
         const stepEl = document.getElementById("__wf_hud_step__");
         if (stepEl) {
           if (!stepEl.dataset.originalText) stepEl.dataset.originalText = stepEl.textContent;
           const remaining = Math.ceil((timeoutMs - (Date.now() - startTime)) / 1000);
-          stepEl.textContent = `Waiting for page to load... (${remaining}s)`;
+          stepEl.textContent = `Waiting for element... (${remaining}s)`;
         }
         await wait(250);
       }
-      if (!found) return { ok: false, reason: "element_not_found" };
+
+      if (isWaiting) {
+        const stepEl = document.getElementById("__wf_hud_step__");
+        if (stepEl && stepEl.dataset.originalText) stepEl.textContent = stepEl.dataset.originalText;
+      }
+
+      // Phase 2 — if the exact selector timed out, try a relaxed version that
+      // strips :nth-of-type() qualifiers. This recovers from ng-repeat / v-for
+      // re-renders where the element class is stable but its list position changed.
+      if (!resolvedEl) {
+        const relaxed = event.selector.replace(/:nth-of-type\(\d+\)/g, "");
+        if (relaxed !== event.selector) {
+          try {
+            const stepEl = document.getElementById("__wf_hud_step__");
+            if (stepEl) stepEl.textContent = "Trying relaxed selector\u2026";
+
+            const candidates = Array.from(document.querySelectorAll(relaxed));
+            if (candidates.length === 1) {
+              resolvedEl = candidates[0];
+            } else if (candidates.length > 1 && event.x !== undefined && event.y !== undefined) {
+              // Pick the candidate whose centre is closest to the recorded click point.
+              resolvedEl = candidates.reduce((best, c) => {
+                const r = c.getBoundingClientRect();
+                const cx = r.left + r.width / 2;
+                const cy = r.top + r.height / 2;
+                const dist = Math.hypot(cx - event.x, cy - event.y);
+                const rb = best.getBoundingClientRect();
+                const bx = rb.left + rb.width / 2;
+                const by = rb.top + rb.height / 2;
+                return dist < Math.hypot(bx - event.x, by - event.y) ? c : best;
+              });
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Phase 3 — last-resort coordinate hit-test.
+      // Only reached when both Phase 1 (exact selector) and Phase 2 (relaxed selector)
+      // produced zero DOM candidates. elementFromPoint() is used deliberately here:
+      // a coordinate hit is strictly better than an immediate hard failure.
+      //
+      // Two pitfalls handled explicitly:
+      //  a) The player HUD is fixed to the viewport and can sit on top of the target
+      //     coordinates, causing elementFromPoint to return a HUD element instead of
+      //     the page element. The HUD is temporarily hidden for the hit-test.
+      //  b) pageX/pageY (scroll-adjusted) are used so the target is always addressed
+      //     in document space. If the target is currently scrolled off-screen the page
+      //     is scrolled to bring it into the viewport before the hit-test.
+      if (!resolvedEl && event.x !== undefined && event.y !== undefined &&
+          (event.type === "click" || event.type === "right_click")) {
+        try {
+          const stepEl = document.getElementById("__wf_hud_step__");
+          if (stepEl) stepEl.textContent = "Trying coordinates\u2026";
+
+          // Hide extension overlays so they don't intercept the hit-test.
+          const hud    = document.getElementById("__workflow_player_hud__");
+          const recInd = document.getElementById("__workflow_rec_indicator__");
+          const prevHudPE    = hud?.style.pointerEvents;
+          const prevRecIndPE = recInd?.style.pointerEvents;
+          if (hud)    hud.style.pointerEvents    = "none";
+          if (recInd) recInd.style.pointerEvents = "none";
+
+          // Prefer page-space coordinates so scroll position at playback time
+          // doesn't affect the result. Fall back to client coords if not recorded.
+          const pageX = event.pageX !== undefined ? event.pageX : event.x;
+          const pageY = event.pageY !== undefined ? event.pageY : event.y;
+          let vpX = pageX - window.scrollX;
+          let vpY = pageY - window.scrollY;
+
+          // If the target is outside the current viewport, scroll it into view first.
+          if (vpY < 0 || vpY > window.innerHeight || vpX < 0 || vpX > window.innerWidth) {
+            window.scrollTo(
+              Math.max(0, pageX - window.innerWidth  / 2),
+              Math.max(0, pageY - window.innerHeight / 2)
+            );
+            await wait(100);
+            vpX = pageX - window.scrollX;
+            vpY = pageY - window.scrollY;
+          }
+
+          const hit = document.elementFromPoint(vpX, vpY);
+
+          // Restore overlays.
+          if (hud)    hud.style.pointerEvents    = prevHudPE    ?? "";
+          if (recInd) recInd.style.pointerEvents = prevRecIndPE ?? "";
+
+          if (hit && hit !== document.body && hit !== document.documentElement) {
+            // Walk up to the element the selector targets (not a child dot/span).
+            // e.g. "p.billingtext5:nth-of-type(4)" → leaf "p.billingtext5"
+            const leafRaw = event.selector.split(/\s*>\s*/).pop() || "";
+            const leafSel = leafRaw.replace(/:nth-of-type\(\d+\)/g, "").trim();
+            let candidate = hit;
+            if (leafSel) {
+              try { candidate = hit.closest(leafSel) || hit; } catch (_) {}
+            }
+            resolvedEl = candidate;
+          }
+        } catch (_) {}
+      }
+
+      if (!resolvedEl) return { ok: false, reason: "element_not_found" };
     }
-    // No selector recorded → fall through to best-effort coordinate replay below.
+    // No selector recorded → fall through; resolvedEl stays null and the
+    // coordinate path below handles it.
   }
 
-  // Best-effort element resolution for the actual replay dispatch.
-  // Coordinates fallback is intentional here for replay robustness only.
+  // Element resolution for the actual event dispatch.
+  // Coordinates are only used when no selector was recorded at all.
   function getElement(selector, x, y) {
+    if (resolvedEl) return resolvedEl;
     if (selector) {
       try {
         const el = document.querySelector(selector);
@@ -1474,7 +1605,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
 
   const el = getElement(event.selector, event.x, event.y);
 
-  // Guard: interactive events with no resolved element (no selector + bad coordinates)
+  // Guard: no element resolved by any strategy → genuine missing element.
   if (interactiveTypes.includes(event.type) && !el) {
     return { ok: false, reason: "element_not_found" };
   }

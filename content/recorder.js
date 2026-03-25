@@ -30,11 +30,15 @@
    * Strategy:
    * 1. Prioritizes stable, framework-agnostic data attributes (data-testid, data-cy, etc.)
    *    which are highly resistant to structural or style changes.
-   * 2. Falls back to the element ID if it exists and appears non-dynamic 
+   * 2. Falls back to the element ID if it exists and appears non-dynamic
    *    (rejects auto-generated IDs from frameworks like React/Ember).
-   * 3. For interactive elements (buttons, inputs), attempts to use accessibility 
+   * 3. Checks AngularJS / legacy Angular directive attributes (ng-click, ng-model,
+   *    accesskey, ui-sref, ng-href). These are expression strings baked into the DOM
+   *    at template-compile time and remain stable across re-renders, making them far
+   *    more reliable anchors than positional structural paths.
+   * 4. For interactive elements (buttons, inputs), attempts to use accessibility
    *    or form attributes (aria-label, name) if they uniquely identify the element.
-   * 4. As a last resort, delegates to `buildSelectorPath` for a complete structural hierarchy.
+   * 5. As a last resort, delegates to `buildSelectorPath` for a structural hierarchy.
    *
    * @param {Element} element - The target DOM element.
    * @returns {string} - A unique CSS selector string.
@@ -56,6 +60,23 @@
       }
     }
 
+    // AngularJS (1.x) and legacy Angular directive attributes.
+    // Checked before aria/name because these attrs are template-level constants —
+    // they survive digest cycles and ng-repeat re-renders unchanged.
+    // Both a bare [attr="val"] and a tag-scoped variant are tried so that
+    // repeated directives (e.g. two ng-model="name" on different components)
+    // still resolve to a unique selector.
+    const ngAttrs = ["ng-click", "ng-model", "accesskey", "ui-sref", "ng-href"];
+    for (const attr of ngAttrs) {
+      const val = element.getAttribute(attr);
+      if (!val) continue;
+      const escaped = CSS.escape(val);
+      const sel = `[${attr}="${escaped}"]`;
+      try { if (document.querySelectorAll(sel).length === 1) return sel; } catch (_) {}
+      const tagSel = `${element.tagName.toLowerCase()}[${attr}="${escaped}"]`;
+      try { if (document.querySelectorAll(tagSel).length === 1) return tagSel; } catch (_) {}
+    }
+
     const interactiveTags = ["button", "a", "input", "select", "textarea"];
     if (interactiveTags.includes(element.tagName.toLowerCase())) {
       const ariaLabel = element.getAttribute("aria-label");
@@ -74,16 +95,45 @@
   }
 
   /**
+   * Returns true if any ancestor of `el` (up to but not including body) carries
+   * an AngularJS ng-repeat directive. Elements inside such containers have a DOM
+   * position that is driven by data, not structure, so :nth-of-type qualifiers are
+   * meaningless as stable playback anchors.
+   *
+   * @param {Element} el
+   * @returns {boolean}
+   */
+  function isDescendantOfNgRepeat(el) {
+    let cur = el.parentElement;
+    while (cur && cur !== document.body) {
+      if (
+        cur.hasAttribute("ng-repeat") ||
+        cur.hasAttribute("data-ng-repeat") ||
+        cur.hasAttribute("x-ng-repeat")
+      ) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  /**
    * Builds a structural DOM path selector for an element.
    *
    * Strategy:
-   * Traverses up the DOM tree from the target element to the body, recording the 
-   * tag name, up to two stable class names (filtering out dynamic state classes 
-   * like 'active' or 'hover'), and the element's index among identical siblings 
-   * (`:nth-of-type`) to ensure specificity. At each level of traversal, it tests 
-   * if the current constructed path uniquely identifies the target element in the DOM; 
-   * if so, it short-circuits and returns the path early to keep the selector as 
-   * short as possible.
+   * Traverses up the DOM tree from the target element to the body, recording the
+   * tag name and up to two stable class names. Dynamic state classes (active, hover,
+   * open, loading, ng-*, etc.) are filtered out to avoid selectors that break when
+   * UI state changes between recording and playback.
+   *
+   * At each level the class-only path is tested first, without any :nth-of-type
+   * qualifier. When multiple DOM elements still match, a :nth-of-type fallback is
+   * attempted — but ONLY if the target element is not inside an AngularJS ng-repeat
+   * block (checked once upfront). ng-repeat recreates list items in data order on
+   * every digest; a positional index recorded at one moment will silently resolve to
+   * the wrong item — or no item — after any state-driven re-render. When
+   * :nth-of-type also fails to uniquify, traversal continues upward with the
+   * non-positional part kept in the path so the playback engine can use recorded
+   * x/y proximity to pick the right match from multiple candidates.
    *
    * @param {Element} element - The target DOM element.
    * @returns {string} - A structural CSS selector string.
@@ -91,19 +141,47 @@
   function buildSelectorPath(element) {
     const parts = [];
     let current = element;
+
+    // Pre-check once: if the target lives inside an ng-repeat container, every
+    // element in the path inherits that volatility — skip :nth-of-type globally.
+    const insideNgRepeat = isDescendantOfNgRepeat(element);
+
     while (current && current !== document.body && current.nodeType === Node.ELEMENT_NODE) {
       let part = current.tagName.toLowerCase();
       const classes = Array.from(current.classList)
-        .filter(c => c.length > 1 && !/^(active|hover|focus|disabled|selected|is-|has-|ng-|v-|js-)/.test(c))
+        .filter(c => c.length > 1 && !/^(active|hover|focus|disabled|selected|loading|open|closed|visible|hidden|expanded|collapsed|is-|has-|ng-|v-|js-)/.test(c))
         .slice(0, 2);
       if (classes.length) part += "." + classes.map(c => CSS.escape(c)).join(".");
-      const siblings = current.parentElement
-        ? Array.from(current.parentElement.children).filter(s => s.tagName === current.tagName)
-        : [];
-      if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+
+      // Always try the class-only path first — without :nth-of-type.
+      // This survives ng-repeat / v-for re-renders where list order may shift
+      // between recording and playback; the playback engine resolves any
+      // remaining ambiguity via recorded x/y proximity.
       parts.unshift(part);
       const candidate = parts.join(" > ");
       try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch (_) {}
+
+      // :nth-of-type fallback: skip entirely when inside an ng-repeat (checked
+      // upfront) or when the current element itself is an ng-repeat root.
+      // Both cases mean the positional index is data-driven and therefore volatile.
+      const skipNth =
+        insideNgRepeat ||
+        current.hasAttribute("ng-repeat") ||
+        current.hasAttribute("data-ng-repeat") ||
+        current.hasAttribute("x-ng-repeat");
+      if (!skipNth) {
+        const siblings = current.parentElement
+          ? Array.from(current.parentElement.children).filter(s => s.tagName === current.tagName)
+          : [];
+        if (siblings.length > 1) {
+          const nthPart = part + `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          parts[0] = nthPart;
+          const nthCandidate = parts.join(" > ");
+          try { if (document.querySelectorAll(nthCandidate).length === 1) return nthCandidate; } catch (_) {}
+          parts[0] = part; // revert: keep non-positional part for continued upward traversal
+        }
+      }
+
       current = current.parentElement;
     }
     return parts.join(" > ");
@@ -152,7 +230,7 @@
    * @param {MouseEvent} e - The native mouse click event.
    */
   function onMouseClick(e) {
-    if (e.target.closest?.("#__workflow_rec_indicator__")) return;
+    if (e.target.closest?.("#__workflow_rec_indicator__") || e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     if (longPressFired) {
       longPressFired = false;
       return;
@@ -193,6 +271,7 @@
    */
   function onMouseDown(e) {
     if (e.button !== 0) return;
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     longPressFired = false;
     startX = e.clientX;
     startY = e.clientY;
@@ -263,6 +342,7 @@
    * @param {MouseEvent} e - The native contextmenu event.
    */
   function onContextMenu(e) {
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const el = e.target;
     sendEvent({
       type: "right_click",
@@ -313,6 +393,7 @@
    * @param {Event} e - The native scroll event.
    */
   function onScroll(e) {
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
       const el = e.target;
@@ -340,6 +421,7 @@
    * @param {KeyboardEvent} e - The native keydown event.
    */
   function onKeyDown(e) {
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const special = ["Enter","Escape","Tab","Backspace","Delete",
       "ArrowUp","ArrowDown","ArrowLeft","ArrowRight",
       "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"];
@@ -366,6 +448,7 @@
    * @param {Event} e - The native input event.
    */
   function onInput(e) {
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const el = e.target;
     if (el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio")) return;
     
@@ -394,6 +477,7 @@
    * @param {Event} e - The native change event.
    */
   function onChange(e) {
+    if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const el = e.target;
     if (el.tagName === "INPUT" && el.type === "text") return;
     
@@ -470,14 +554,23 @@
 
   const INDICATOR_ID = "__workflow_rec_indicator__";
 
+  // Inline SVG icons — stroke-based, 18×18 viewBox, no fill.
+  const SVG = {
+    screenshot: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="6" width="13" height="10" rx="1.2"/><path d="M5.5 6l1-2h3l1 2"/><circle cx="8" cy="11.5" r="2.2"/></svg>`,
+    network:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><ellipse cx="9" cy="9" rx="3" ry="7"/><line x1="2" y1="9" x2="16" y2="9"/></svg>`,
+    console:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6.5 7.5,9 3,11.5"/><line x1="9" y1="12" x2="15" y2="12"/></svg>`,
+    save:       `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,9.5 7,13.5 15,4.5"/></svg>`,
+    discard:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round"><line x1="4.5" y1="4.5" x2="13.5" y2="13.5"/><line x1="13.5" y1="4.5" x2="4.5" y2="13.5"/></svg>`,
+    restart:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 9a3.5 3.5 0 1 0 .7-2.1"/><polyline points="3,5.5 6,6.8 5.5,10"/></svg>`,
+  };
+
   /**
-   * Renders the visual recording indicator badge.
+   * Renders the visual recording indicator HUD.
    *
    * Strategy:
-   * Injects a fixed, unclickable (`pointer-events: none`) DOM element into the page 
-   * using isolated inline CSS to prevent page stylesheets from mutating its appearance. 
-   * It appends an intermittent CSS animation (`__wf_blink__`) directly inside a 
-   * `<style>` tag to visually simulate a pulsing 'REC' state.
+   * Injects a draggable radial menu with a dark-glass aesthetic, SVG icons, and
+   * a ripple-pulsing REC hub. No emojis. All buttons share a single uniform dark-glass
+   * style with stroke-only SVG icons at 18×18.
    */
   function showRecordingIndicator() {
     if (document.getElementById(INDICATOR_ID)) return;
@@ -487,13 +580,15 @@
       const s = document.createElement("style");
       s.id = "__wf_blink_style__";
       s.textContent = `
-        @keyframes __wf_blink__{0%,100%{opacity:1}50%{opacity:0.25}}
-        @keyframes __wf_spin__{to{transform:rotate(360deg)}}
+        @keyframes __wf_ripple__{
+          0%  { box-shadow: 0 0 0 0   rgba(255,215,0,0.7),  0 4px 20px rgba(255,215,0,0.4); }
+          70% { box-shadow: 0 0 0 10px rgba(255,215,0,0),   0 4px 20px rgba(255,215,0,0.4); }
+          100%{ box-shadow: 0 0 0 0   rgba(255,215,0,0),   0 4px 20px rgba(255,215,0,0.4); }
+        }
 
-        /* Radial hub */
         #__workflow_rec_indicator__{
           position:fixed;
-          bottom:28px;right:28px;
+          bottom:25vh;right:28px;
           width:0;height:0;
           z-index:2147483647;
           font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -501,97 +596,55 @@
           user-select:none;
         }
 
-        /* Center REC node */
         .__wf_hub__{
           position:absolute;
-          width:56px;height:56px;
+          width:54px;height:54px;
           border-radius:50%;
-          background:rgba(220,38,38,0.95);
-          box-shadow:0 4px 20px rgba(220,38,38,0.45),0 2px 8px rgba(0,0,0,0.35);
-          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          background:#ffd700;
+          border:1.5px solid rgba(0,0,0,0.8);
+          display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
           cursor:grab;
           transform:translate(-50%,-50%);
-          transition:box-shadow 0.2s,background 0.2s;
-          border:2.5px solid rgba(255,255,255,0.25);
+          animation:__wf_ripple__ 2s ease-out infinite;
+          transition:background 0.2s;
         }
         .__wf_hub__:active{cursor:grabbing;}
-        .__wf_hub__:hover{box-shadow:0 6px 24px rgba(220,38,38,0.6),0 2px 8px rgba(0,0,0,0.35);}
-        .__wf_hub_dot__{
-          width:9px;height:9px;background:#fff;border-radius:50%;
-          animation:__wf_blink__ 1.1s ease-in-out infinite;margin-bottom:3px;
-        }
         .__wf_hub_label__{
-          font-size:10px;font-weight:700;color:#fff;letter-spacing:0.8px;line-height:1;
+          font-size:10px;font-weight:700;color:#000;letter-spacing:1px;line-height:1;
+        }
+        .__wf_hub_sub__{
+          font-size:7.5px;font-weight:500;color:rgba(0,0,0,0.7);letter-spacing:0.5px;line-height:1;
         }
 
-        /* Toggle arrow ring */
-        .__wf_toggle_ring__{
-          position:absolute;
-          width:26px;height:26px;border-radius:50%;
-          background:rgba(255,255,255,0.15);
-          border:1.5px solid rgba(255,255,255,0.35);
-          display:flex;align-items:center;justify-content:center;
-          cursor:pointer;
-          transform:translate(-50%,-50%) translateY(-36px);
-          transition:background 0.2s;
-          font-size:11px;color:#fff;
-        }
-        .__wf_toggle_ring__:hover{background:rgba(255,255,255,0.28);}
-
-        /* Radial buttons — common */
         .__wf_radial_btn__{
           position:absolute;
-          width:44px;height:44px;border-radius:50%;
-          border:none;cursor:pointer;
-          display:flex;flex-direction:column;align-items:center;justify-content:center;
-          gap:2px;
-          font-size:16px;
-          box-shadow:0 3px 12px rgba(0,0,0,0.35);
+          width:42px;height:42px;border-radius:50%;
+          background:rgba(0,0,0,0.9);
+          border:1px solid rgba(255,215,0,0.5);
+          backdrop-filter:blur(8px);
+          cursor:pointer;
+          display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+          box-shadow:0 2px 10px rgba(0,0,0,0.45);
           transform:translate(-50%,-50%) scale(0);
           opacity:0;
-          transition:transform 0.28s cubic-bezier(.34,1.56,.64,1),opacity 0.2s ease,box-shadow 0.2s;
+          transition:transform 0.28s cubic-bezier(.34,1.56,.64,1),opacity 0.2s ease,border-color 0.15s,background 0.15s;
           pointer-events:none;
         }
         .__wf_radial_btn__ span.__wf_btn_label__{
-          font-size:8px;font-weight:600;color:inherit;letter-spacing:0.3px;line-height:1;
-          white-space:nowrap;
+          font-size:7px;font-weight:600;color:#ffd700;
+          letter-spacing:0.5px;line-height:1;white-space:nowrap;
+          text-transform:uppercase;
         }
         .__wf_radial_btn__:hover{
-          box-shadow:0 5px 18px rgba(0,0,0,0.45);
-          filter:brightness(1.1);
+          background:#111;
+          border-color:#ffd700;
+          box-shadow:0 4px 16px rgba(255,215,0,0.25);
         }
-
-        /* Expanded state toggled on the hub wrapper */
         .__wf_expanded__ .__wf_radial_btn__{
           transform:translate(-50%,-50%) scale(1);
           opacity:1;
           pointer-events:auto;
         }
-
-        /* Tooltip */
-        .__wf_radial_btn__::after{
-          content:attr(data-tip);
-          position:absolute;
-          bottom:calc(100% + 6px);left:50%;
-          transform:translateX(-50%);
-          background:rgba(17,24,39,0.9);
-          color:#f9fafb;font-size:10px;font-weight:500;
-          padding:3px 7px;border-radius:4px;
-          white-space:nowrap;
-          opacity:0;pointer-events:none;
-          transition:opacity 0.15s;
-        }
-        .__wf_radial_btn__:hover::after{opacity:1;}
-
-        /* Inner-ring colours */
-        .__wf_btn_screenshot__{ background:#2563eb;color:#fff; }
-        .__wf_btn_network__{   background:#0891b2;color:#fff; }
-        .__wf_btn_console__{   background:#7c3aed;color:#fff; }
-
-        /* Outer-ring colours */
-        .__wf_btn_save__{      background:#16a34a;color:#fff; }
-        .__wf_btn_discard__{   background:#dc2626;color:#fff; }
-        .__wf_btn_restart__{   background:#d97706;color:#fff; }
       `;
       document.head.appendChild(s);
     }
@@ -600,48 +653,35 @@
     const container = document.createElement("div");
     container.id = INDICATOR_ID;
 
-    // ── Center node ───────────────────────────────────────────────────────────
+    // ── Center REC hub ───────────────────────────────────────────────────────
     const hub = document.createElement("div");
     hub.className = "__wf_hub__";
-    const dot = document.createElement("div");
-    dot.className = "__wf_hub_dot__";
     const recLabel = document.createElement("div");
     recLabel.className = "__wf_hub_label__";
     recLabel.textContent = "REC";
-    hub.appendChild(dot);
+    const recSub = document.createElement("div");
+    recSub.className = "__wf_hub_sub__";
+    recSub.textContent = "live";
     hub.appendChild(recLabel);
+    hub.appendChild(recSub);
 
-    // ── Expand / collapse toggle (small arrow above hub) ──────────────────────
+    // ── Expand / collapse toggle ──────────────────────────────────────────────
     let expanded = false;
-    const toggleRing = document.createElement("div");
-    toggleRing.className = "__wf_toggle_ring__";
-    toggleRing.textContent = "▲";
-    toggleRing.title = "Expand controls";
-    toggleRing.addEventListener("click", (e) => {
-      e.stopPropagation();
-      expanded = !expanded;
-      container.classList.toggle("__wf_expanded__", expanded);
-      toggleRing.textContent = expanded ? "▼" : "▲";
-      toggleRing.title = expanded ? "Collapse controls" : "Expand controls";
-    });
+
+    // We open/close concentrics when clicking on the hub, but we only do it
+    // if it wasn't a drag event. We'll handle this in the hub mouse handlers.
 
     // ── Radial button factory ─────────────────────────────────────────────────
-    function makeRadialBtn(icon, label, cls, tipText, rx, ry, onClick) {
+    function makeRadialBtn(svgIcon, acronym, tipText, rx, ry, onClick) {
       const btn = document.createElement("button");
-      btn.className = `__wf_radial_btn__ ${cls}`;
-      btn.setAttribute("data-tip", tipText);
+      btn.className = "__wf_radial_btn__";
       btn.style.left = `${rx}px`;
       btn.style.top  = `${ry}px`;
-      btn.innerHTML = `${icon}<span class="__wf_btn_label__">${label}</span>`;
+      btn.innerHTML = `${svgIcon}<span class="__wf_btn_label__">${acronym}</span>`;
       btn.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
       return btn;
     }
 
-    // Inner ring radius 68px, outer ring radius 128px.
-    // Angles chosen so buttons fan out nicely above/left of the hub.
-    // θ measured clockwise from top: top=270°(−90°), top-right=330°(−30°), right=30°, etc.
-    // Inner ring: 3 buttons at 210°, 270°, 330° (bottom-left arc, pointing upward)
-    // Outer ring: 3 buttons at 210°, 270°, 330° but further out
     const R1 = 72;   // inner ring radius
     const R2 = 136;  // outer ring radius
 
@@ -650,41 +690,48 @@
       return { x: Math.round(radius * Math.cos(rad)), y: Math.round(radius * Math.sin(rad)) };
     }
 
-    // Inner ring — observation tools (top-left arc: 210°, 270°, 330°)
-    const innerAngles = [210, 270, 330];
-    const p1 = pos(innerAngles[0], R1);
-    const p2 = pos(innerAngles[1], R1);
-    const p3 = pos(innerAngles[2], R1);
+    // Inner ring — observation tools
+    const p1 = pos(210, R1);
+    const p2 = pos(270, R1);
+    const p3 = pos(330, R1);
 
-    const btnScreenshot = makeRadialBtn("📸", "Shot", "__wf_btn_screenshot__", "Screenshot checkpoint",
+    const btnScreenshot = makeRadialBtn(SVG.screenshot, "CP", "Screenshot checkpoint",
       p1.x, p1.y, () => {
         const lbl = prompt("Screenshot checkpoint label (optional):");
         if (lbl !== null) chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label: lbl }).catch(() => {});
       });
 
-    const btnNetwork = makeRadialBtn("🌐", "Net", "__wf_btn_network__", "Toggle Network log",
+    const btnNetwork = makeRadialBtn(SVG.network, "NET", "Toggle Network log",
       p2.x, p2.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {}));
 
-    const btnConsole = makeRadialBtn("💻", "Log", "__wf_btn_console__", "Toggle Console log",
+    const btnConsole = makeRadialBtn(SVG.console, "LOG", "Toggle Console log",
       p3.x, p3.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {}));
 
-    // Outer ring — session controls (same arc, further out)
-    const outerAngles = [210, 270, 330];
-    const q1 = pos(outerAngles[0], R2);
-    const q2 = pos(outerAngles[1], R2);
-    const q3 = pos(outerAngles[2], R2);
+    // Outer ring — session controls
+    const q1 = pos(210, R2);
+    const q2 = pos(270, R2);
+    const q3 = pos(330, R2);
 
-    const btnSave = makeRadialBtn("💾", "Save", "__wf_btn_save__", "Stop & Save",
-      q1.x, q1.y, () => chrome.runtime.sendMessage({ type: "STOP_RECORDING" }).catch(() => {}));
+    const closeAllDialogs = () => {
+      chrome.runtime.sendMessage({ type: "CLOSE_CONSOLE_DIALOG" }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "CLOSE_NETWORK_DIALOG" }).catch(() => {});
+    };
 
-    const btnDiscard = makeRadialBtn("🗑", "Discard", "__wf_btn_discard__", "Discard recording",
+    const btnSave = makeRadialBtn(SVG.save, "SAVE", "Stop & Save",
+      q1.x, q1.y, () => {
+        closeAllDialogs();
+        chrome.runtime.sendMessage({ type: "STOP_RECORDING" }).catch(() => {});
+      });
+
+    const btnDiscard = makeRadialBtn(SVG.discard, "DEL", "Discard recording",
       q2.x, q2.y, () => {
         if (confirm("Discard this recording?")) {
+          closeAllDialogs();
           chrome.runtime.sendMessage({ type: "DISCARD_RECORDING" }).catch(() => {});
         }
       });
 
-    const btnRestart = makeRadialBtn("🔄", "Restart", "__wf_btn_restart__", "Restart recording",
+    const btnRestart = makeRadialBtn(SVG.restart, "RST", "Restart recording",
       q3.x, q3.y, () => {
         if (confirm("Restart recording? Current events will be cleared.")) {
           chrome.runtime.sendMessage({ type: "RESTART_RECORDING" }).catch(() => {});
@@ -692,7 +739,6 @@
       });
 
     container.appendChild(hub);
-    container.appendChild(toggleRing);
     container.appendChild(btnScreenshot);
     container.appendChild(btnNetwork);
     container.appendChild(btnConsole);
@@ -714,10 +760,20 @@
       return { left: rect.left, top: rect.top };
     }
 
+    let hasDragged = false;
+    hub.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!hasDragged) {
+        expanded = !expanded;
+        container.classList.toggle("__wf_expanded__", expanded);
+      }
+    });
+
     hub.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+      hasDragged = false;
       const rect = getContainerRect();
       dragging = true;
       dragStartX = e.clientX;
@@ -734,6 +790,7 @@
 
     document.addEventListener("mousemove", (e) => {
       if (!dragging) return;
+      hasDragged = true;
       const dx = e.clientX - dragStartX;
       const dy = e.clientY - dragStartY;
       const newLeft = Math.max(0, Math.min(window.innerWidth  - 56, startLeft + dx));
@@ -750,6 +807,7 @@
 
     // Touch support
     hub.addEventListener("touchstart", (e) => {
+      hasDragged = false;
       const t = e.touches[0];
       const rect = getContainerRect();
       dragging = true;
@@ -765,6 +823,7 @@
 
     document.addEventListener("touchmove", (e) => {
       if (!dragging) return;
+      hasDragged = true;
       const t = e.touches[0];
       const dx = t.clientX - dragStartX;
       const dy = t.clientY - dragStartY;
@@ -866,9 +925,21 @@
             url: window.location.href,
           },
         });
+      } else if (e.data.type === "network_call") {
+        // Forward network calls captured by MAIN-world fetch/XHR patching.
+        // This carries requestBody which chrome.webRequest cannot provide.
+        chrome.runtime.sendMessage({
+          type: "RECORD_NETWORK_CALL_WITH_BODY",
+          call: {
+            url: e.data.url,
+            method: e.data.method,
+            status: e.data.status,
+            requestBody: e.data.requestBody || null,
+            timestamp: e.data.timestamp,
+            tabUrl: window.location.href,
+          },
+        });
       }
-      // network_call forwarding removed — the service worker captures XHR directly
-      // via chrome.webRequest, which works regardless of injection timing.
     } catch (_) {}
   });
 

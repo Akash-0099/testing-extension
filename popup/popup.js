@@ -494,7 +494,9 @@ chrome.runtime.onMessage.addListener((msg) => {
       if (recCheckpointCount) {
         recCheckpointCount.textContent = parseInt(recCheckpointCount.textContent || "0") + 1;
       }
-      addThumbnail(checkpointThumbsRec, msg.screenshotDataUrl, msg.label, msg.index);
+      if (msg.screenshotDataUrl) {
+        addThumbnail(checkpointThumbsRec, msg.screenshotDataUrl, msg.label, msg.index);
+      }
       break;
 
     case "CONSOLE_CHECKPOINT_ADDED":
@@ -529,8 +531,10 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case "CHECKPOINT_REACHED":
       noCheckpointsYet.style.display = "none";
-      playScreenshots[msg.index] = msg.screenshotDataUrl;
-      addThumbnail(checkpointThumbsPlay, msg.screenshotDataUrl, msg.label, msg.index);
+      if (msg.screenshotDataUrl) {
+        playScreenshots[msg.index] = msg.screenshotDataUrl;
+        addThumbnail(checkpointThumbsPlay, msg.screenshotDataUrl, msg.label, msg.index);
+      }
       break;
 
     case "WORKFLOW_PLAYBACK_COMPLETE":
@@ -543,7 +547,10 @@ chrome.runtime.onMessage.addListener((msg) => {
         ? `Step ${step.index + 1} (${step.type}${step.selector ? ": " + step.selector.slice(0, 35) : ""})`
         : "unknown step";
       showToast(`Failed at ${stepDesc}`, "error");
-      handlePlaybackComplete();
+      // Only return to idle — do NOT call handlePlaybackComplete() here because
+      // that function shows "Entire queue completed." (success), which would
+      // immediately overwrite this error toast with a false-positive message.
+      showPanel("idle");
       break;
     }
 

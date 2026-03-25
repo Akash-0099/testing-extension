@@ -82,7 +82,9 @@
     closeBtn.onclick = () => {
       dialog.style.display = "none";
       const action = type === "console" ? "CLOSE_CONSOLE_DIALOG" : "CLOSE_NETWORK_DIALOG";
-      chrome.runtime.sendMessage({ type: action }).catch(() => {});
+      try {
+        chrome.runtime.sendMessage({ type: action }).catch(() => {});
+      } catch (err) {}
     };
 
     header.appendChild(title);
@@ -328,18 +330,20 @@
     if (otherDialog) otherDialog.style.zIndex = "2147483647";
     
     // Fetch latest state from Service Worker specific to this tab
-    chrome.runtime.sendMessage({ type: type === "console" ? "GET_CONSOLE_LOGS" : "GET_NETWORK_CALLS" }, (res) => {
-      if (chrome.runtime.lastError) return;
-      DIALOGS[type].items = (type === "console" ? res?.logs : res?.calls) || [];
-      renderList(type);
-      
-      // Auto-scroll to bottom on open
-      setTimeout(() => {
-        const listContainer = dialog.querySelector(".__wf_logs_list__");
-        const body = listContainer?.parentElement;
-        if (body) body.scrollTop = body.scrollHeight;
-      }, 50);
-    });
+    try {
+      chrome.runtime.sendMessage({ type: type === "console" ? "GET_CONSOLE_LOGS" : "GET_NETWORK_CALLS" }, (res) => {
+        if (chrome.runtime.lastError) return;
+        DIALOGS[type].items = (type === "console" ? res?.logs : res?.calls) || [];
+        renderList(type);
+        
+        // Auto-scroll to bottom on open
+        setTimeout(() => {
+          const listContainer = dialog.querySelector(".__wf_logs_list__");
+          const body = listContainer?.parentElement;
+          if (body) body.scrollTop = body.scrollHeight;
+        }, 50);
+      });
+    } catch (err) {}
   }
 
   function hideDialog(type) {
@@ -414,8 +418,31 @@
         else hideDialog("network");
 
         sendResponse({ ok: true });
+      } else if (msg.type === "CLOSE_ALL_DIALOGS") {
+        // Remove dialog elements entirely from this tab
+        const cd = document.getElementById(DIALOGS.console.id);
+        if (cd) cd.remove();
+        const nd = document.getElementById(DIALOGS.network.id);
+        if (nd) nd.remove();
+        DIALOGS.console.items = [];
+        DIALOGS.console.selected = null;
+        DIALOGS.network.items = [];
+        DIALOGS.network.selected = null;
+        sendResponse({ ok: true });
+      } else if (msg.type === "CLEAR_DIALOG_CONTENT") {
+        // On tab switch: reuse existing dialogs, just clear their content
+        DIALOGS.console.items = [];
+        DIALOGS.console.selected = null;
+        DIALOGS.network.items = [];
+        DIALOGS.network.selected = null;
+        renderList("console");
+        renderList("network");
+        sendResponse({ ok: true });
       } else if (msg.type === "NETWORK_CALL_LIVE") {
         DIALOGS.network.items.push(msg.call);
+        if (DIALOGS.network.items.length > 20) {
+          DIALOGS.network.items = DIALOGS.network.items.slice(-20);
+        }
         const dialog = document.getElementById(DIALOGS.network.id);
         if (dialog && dialog.style.display === "flex") {
           renderList("network");
@@ -440,6 +467,9 @@
         timestamp: e.data.timestamp,
         url: window.location.href,
       });
+      if (DIALOGS.console.items.length > 20) {
+        DIALOGS.console.items = DIALOGS.console.items.slice(-20);
+      }
 
       const dialog = document.getElementById(DIALOGS.console.id);
       if (dialog && dialog.style.display === "flex") {

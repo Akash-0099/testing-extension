@@ -58,13 +58,15 @@ model PlaybackRun {
 }
 
 model PlaybackCheckpoint {
-  id           String      @id @default(uuid())
-  runId        String      @map("run_id")
-  index        Int
-  label        String?
-  dataUrl      String      @map("data_url") @db.Text
-  createdAt    DateTime    @default(now()) @map("created_at")
-  run          PlaybackRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  id             String      @id @default(uuid())
+  runId          String      @map("run_id")
+  index          Int
+  label          String?
+  checkpointType String?     @map("checkpoint_type")
+  dataUrl        String?     @map("data_url") @db.Text
+  capturedData   String?     @map("captured_data") @db.Text
+  createdAt      DateTime    @default(now()) @map("created_at")
+  run            PlaybackRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@map("playback_checkpoints")
 }
