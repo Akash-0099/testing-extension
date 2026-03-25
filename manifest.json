@@ -14,6 +14,11 @@
   ],
   "host_permissions": [
     "<all_urls>",
+    "*://*/*",
+    "http://*/*",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "http://localhost:3000/*"
   ],
   "background": {
@@ -36,10 +41,31 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content/recorder.js", "content/player.js"],
+      "matches": [
+        "<all_urls>",
+        "*://*/*",
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": ["content/recorder.js", "content/player.js", "content/logs-dialog.js"],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>", "*://*/*"],
+      "js": ["content/page-interceptor.js", "content/playback-capture.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/playback-capture.js", "content/page-interceptor.js"],
+      "matches": [
+        "<all_urls>",
+        "*://*/*"
+      ]
     }
   ]
 }

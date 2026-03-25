@@ -1,57 +1,49 @@
 /**
- * Page Interceptor — MAIN world (Recording)
+ * Playback Capture — MAIN world
  *
  * Strategy:
- * Injected into the page's MAIN JavaScript context during recording via
- * `chrome.scripting.executeScript` with `world: "MAIN"`. Intercepts console
- * methods and network requests (fetch/XHR) which are invisible to ISOLATED-world
- * content scripts.
+ * Injected ONCE into the page's MAIN JavaScript context at the very start of
+ * a playback session — BEFORE any workflow steps run. Accumulates every
+ * console message and every network call into page-local ring-buffers so that
+ * checkpoint verification steps can retroactively match events that fired
+ * during earlier steps, not just future ones.
  *
- * Cross-world delivery:
- *   window.postMessage(...)     → received by logs-dialog.js (ISOLATED world) for live UI updates
- *   CustomEvent (same window)  → received by playback-capture.js checkpoint watchers (MAIN world)
+ * Buffers:
+ *   window.__wfPlayLogs[]  — console messages captured during this playback
+ *   window.__wfPlayNet[]   — full network calls (url, method, headers, bodies)
  *
- * Buffers maintained on the page:
- *   window.__wfConsoleLogs[]  — ring-buffer of console entries (max 1000)
- *   window.__wfNetCalls[]     — ring-buffer of full network calls (max 500)
+ * Events fired on window:
+ *   CustomEvent("__wf_log_capture__")  — detail: { message, level, timestamp }
+ *   CustomEvent("__wf_net_capture__")  — detail: the full network call object
  *
- * Guard: window.__wfInterceptorsInstalled prevents double-patching on re-injection.
+ * Guard: window.__wfPlayCaptureInstalled prevents double-injection on re-injection.
  */
 
 (function () {
   "use strict";
 
-  // Mark recording active immediately.
-  window.__wfRecording = true;
+  if (window.__wfPlayCaptureInstalled) return;
+  window.__wfPlayCaptureInstalled = true;
 
-  if (window.__wfInterceptorsInstalled) return;
-  window.__wfInterceptorsInstalled = true;
-
-  const MAX_LOGS = 1000;
+  const MAX_LOGS = 2000;
   const MAX_NET  = 500;
-  const MAX_BODY = 64 * 1024; // 64 KB
+  const MAX_BODY = 64 * 1024; // 64 KB response body cap
 
-  window.__wfConsoleLogs = window.__wfConsoleLogs || [];
-  window.__wfNetCalls    = window.__wfNetCalls    || [];
+  window.__wfPlayLogs = window.__wfPlayLogs || [];
+  window.__wfPlayNet  = window.__wfPlayNet  || [];
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   function pushLog(entry) {
-    window.__wfConsoleLogs.push(entry);
-    if (window.__wfConsoleLogs.length > MAX_LOGS) window.__wfConsoleLogs.shift();
-    // postMessage → crosses to ISOLATED world (logs-dialog.js)
-    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "console_log", ...entry }, "*");
-    // CustomEvent → stays in MAIN world (playback checkpoint watchers)
-    window.dispatchEvent(new CustomEvent("__wf_console_log__", { detail: entry }));
+    window.__wfPlayLogs.push(entry);
+    if (window.__wfPlayLogs.length > MAX_LOGS) window.__wfPlayLogs.shift();
+    window.dispatchEvent(new CustomEvent("__wf_log_capture__", { detail: entry }));
   }
 
   function pushNet(entry) {
-    window.__wfNetCalls.push(entry);
-    if (window.__wfNetCalls.length > MAX_NET) window.__wfNetCalls.shift();
-    // postMessage → crosses to ISOLATED world (logs-dialog.js)
-    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, "*");
-    // CustomEvent → stays in MAIN world (playback checkpoint watchers)
-    window.dispatchEvent(new CustomEvent("__wf_network_call__", { detail: entry }));
+    window.__wfPlayNet.push(entry);
+    if (window.__wfPlayNet.length > MAX_NET) window.__wfPlayNet.shift();
+    window.dispatchEvent(new CustomEvent("__wf_net_capture__", { detail: entry }));
   }
 
   function serializeBody(body) {
@@ -91,7 +83,6 @@
     const _orig = console[level];
     console[level] = function (...args) {
       _orig.apply(console, args);
-      if (!window.__wfRecording) return;
       const message = args.map(a => {
         try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
       }).join(" ");
@@ -109,13 +100,10 @@
     const requestBody    = serializeBody((init && init.body) || null);
 
     return _origFetch.apply(this, arguments).then((response) => {
-      if (!window.__wfRecording) return response;
-
       const resHeaders = headersToObj(response.headers);
       const resStatus = response.status;
       const resStatusText = response.statusText;
 
-      // Create a skeleton entry immediately so it's visible even if body parsing hangs
       const entry = {
         url,
         method,
@@ -125,41 +113,32 @@
         statusText: resStatusText,
         responseHeaders: resHeaders,
         responseBody: null,
-        timestamp: Date.now(),
+        timestamp: Date.now()
       };
 
-      // Push it to the UI immediately
       pushNet(entry);
 
-      // Try to backfill the body asynchronously
       try {
         const cloned = response.clone();
         setTimeout(() => {
           cloned.text().then((text) => {
-            if (text) {
-              entry.responseBody = text.slice(0, MAX_BODY);
-              // Fire an update event specifically for the body if needed, 
-              // or just rely on the in-page buffer being updated by reference.
-              // For simplicity, we just update the entry in the buffer.
-            }
+            if (text) entry.responseBody = text.slice(0, MAX_BODY);
           }).catch(() => {});
         }, 0);
       } catch (_) {}
 
       return response;
     }).catch((err) => {
-      if (window.__wfRecording) {
-        pushNet({ url, method, requestHeaders, requestBody, status: 0, statusText: "NetworkError", responseHeaders: {}, responseBody: null, timestamp: Date.now() });
-      }
+      pushNet({ url, method, requestHeaders, requestBody, status: 0, statusText: "NetworkError", responseHeaders: {}, responseBody: null, timestamp: Date.now(), error: String(err) });
       throw err;
     });
   };
 
   // ─── XHR interception ───────────────────────────────────────────────────────
 
-  const _origOpen      = XMLHttpRequest.prototype.open;
-  const _origSend      = XMLHttpRequest.prototype.send;
-  const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+  const _origOpen        = XMLHttpRequest.prototype.open;
+  const _origSend        = XMLHttpRequest.prototype.send;
+  const _origSetHeader   = XMLHttpRequest.prototype.setRequestHeader;
 
   XMLHttpRequest.prototype.open = function (method, url) {
     this.__wfMethod  = (method || "GET").toUpperCase();
@@ -176,8 +155,6 @@
   XMLHttpRequest.prototype.send = function (body) {
     const requestBody = serializeBody(body);
     this.addEventListener("loadend", () => {
-      if (!window.__wfRecording) return;
-
       let responseBody = null;
       try {
         if (!this.responseType || this.responseType === "text" || this.responseType === "") {
@@ -187,6 +164,7 @@
         }
       } catch (_) {}
 
+      // Parse response headers string into an object
       const responseHeaders = {};
       try {
         (this.getAllResponseHeaders() || "").trim().split(/\r?\n/).forEach(line => {

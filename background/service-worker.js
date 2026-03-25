@@ -680,7 +680,7 @@ chrome.webRequest.onCompleted.addListener(
       timestamp: details.timeStamp,
     });
   },
-  { urls: ["<all_urls>"], types: ["xmlhttprequest"] }
+  { urls: ["*://*/*", "http://*/*", "https://*/*", "<all_urls>"] }
 );
 
 chrome.webRequest.onErrorOccurred.addListener(
@@ -692,7 +692,7 @@ chrome.webRequest.onErrorOccurred.addListener(
       timestamp: details.timeStamp,
     });
   },
-  { urls: ["<all_urls>"], types: ["xmlhttprequest"] }
+  { urls: ["*://*/*", "http://*/*", "https://*/*", "<all_urls>"] }
 );
 
 // ─── Tab switch tracking ──────────────────────────────────────────────────────
@@ -798,6 +798,17 @@ async function handleStartPlayback(workflows, sendResponse) {
       await chrome.scripting.executeScript({
         target: { tabId: state.playbackTabId },
         files: ["content/player.js"]
+      });
+    } catch (e) {}
+
+    // Inject the playback capture accumulator into MAIN world BEFORE any steps run.
+    // This ensures console logs and network calls fired by step-1's actions are already
+    // captured in window.__wfPlayLogs / window.__wfPlayNet when later checkpoint steps run.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: state.playbackTabId },
+        files: ["content/playback-capture.js"],
+        world: "MAIN",
       });
     } catch (e) {}
   }
@@ -1109,146 +1120,143 @@ async function dispatchPlaybackEvent(event, results, meta) {
     }
 
     case "console_checkpoint": {
-      // Inject an async MAIN-world watcher that resolves when a console.log matching
-      // `event.logMessage` appears, or when the buffer timeout elapses.
       const [cpTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (cpTab) {
-        // Notify player.js HUD that we are actively waiting for this checkpoint.
-        chrome.tabs.sendMessage(cpTab.id, {
-          type: "PLAYBACK_WAITING_CHECKPOINT",
-          checkpointType: "console",
-          label: event.label,
-          detail: event.logMessage,
-        }).catch(() => {});
+      if (!cpTab) return { ok: true }; // soft-pass if no tab
 
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: cpTab.id },
-            world: "MAIN",
-            func: (targetMsg, timeoutMs) => {
-              return new Promise((resolve) => {
-                const _orig = console.log;
-                const timer = setTimeout(() => {
-                  console.log = _orig;
-                  resolve(false);
-                }, timeoutMs);
-                console.log = function (...args) {
-                  _orig.apply(console, args);
-                  const txt = args
-                    .map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); } })
-                    .join(" ");
-                  if (txt.includes(targetMsg)) {
-                    clearTimeout(timer);
-                    console.log = _orig;
-                    resolve(true);
-                  }
-                };
-              });
-            },
-            args: [event.logMessage, state.playBufferMs || 8000],
-          });
-        } catch (_) {}
+      // Notify HUD we are checking for this log.
+      chrome.tabs.sendMessage(cpTab.id, {
+        type: "PLAYBACK_WAITING_CHECKPOINT",
+        checkpointType: "console",
+        label: event.label,
+        detail: event.logMessage,
+      }).catch(() => {});
 
-        try {
-          const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
-          const idx = state.screenshotCount++;
-          results.screenshots[idx] = dataUrl;
-          state.screenshots[idx] = dataUrl;
-          broadcastToPopup({
-            type: "CHECKPOINT_REACHED",
-            index: idx,
-            label: event.label,
-            screenshotDataUrl: dataUrl,
-          });
-          chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-        } catch (_) {}
+      try {
+        // Strategy: First check the retroactive buffer (window.__wfPlayLogs) accumulated
+        // since playback start. If the message was already logged by an earlier action,
+        // we find it immediately instead of timing out waiting for a future event.
+        const found = await chrome.scripting.executeScript({
+          target: { tabId: cpTab.id },
+          world: "MAIN",
+          func: (targetMsg, timeoutMs) => {
+            // 1. Retroactive check — did this log appear before this checkpoint step?
+            const logs = window.__wfPlayLogs || [];
+            const match = logs.find(e => e.message && e.message.includes(targetMsg));
+            if (match) return true;
+
+            // 2. Live watcher — wait for a future matching event (short window).
+            return new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                window.removeEventListener("__wf_log_capture__", handler);
+                resolve(false);
+              }, timeoutMs);
+              function handler(ev) {
+                if (ev.detail && ev.detail.message && ev.detail.message.includes(targetMsg)) {
+                  clearTimeout(timer);
+                  window.removeEventListener("__wf_log_capture__", handler);
+                  resolve(true);
+                }
+              }
+              window.addEventListener("__wf_log_capture__", handler);
+            });
+          },
+          args: [event.logMessage, Math.min(state.playBufferMs || 8000, 5000)],
+        });
+
+        const matched = found?.[0]?.result;
+        if (!matched) {
+          console.warn("[WFPlay] console_checkpoint not matched:", event.logMessage);
+          // Soft-pass: do not fail the workflow for a missed log checkpoint —
+          // take the screenshot anyway so the run has some evidence.
+        }
+      } catch (err) {
+        console.warn("[WFPlay] console_checkpoint error:", err);
       }
+
+      // Capture screenshot as evidence regardless of match result.
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
+        const idx = state.screenshotCount++;
+        results.screenshots[idx] = dataUrl;
+        state.screenshots[idx] = dataUrl;
+        broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
+        chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
+      } catch (_) {}
+
       return { ok: true };
     }
 
     case "network_checkpoint": {
-      // Inject an async MAIN-world watcher that resolves when a fetch or XHR request
-      // matching the recorded URL pattern and method completes, or on timeout.
       const [netTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (netTab) {
-        // Notify player.js HUD that we are actively waiting for this checkpoint.
-        chrome.tabs.sendMessage(netTab.id, {
-          type: "PLAYBACK_WAITING_CHECKPOINT",
-          checkpointType: "network",
-          label: event.label,
-          detail: `${event.networkMethod} ${event.networkUrl}`,
-        }).catch(() => {});
+      if (!netTab) return { ok: true };
 
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: netTab.id },
-            world: "MAIN",
-            func: (targetUrl, targetMethod, timeoutMs) => {
-              return new Promise((resolve) => {
-                let resolved = false;
-                const finish = (matched) => {
-                  if (resolved) return;
-                  resolved = true;
+      // Notify HUD we are checking for this network call.
+      chrome.tabs.sendMessage(netTab.id, {
+        type: "PLAYBACK_WAITING_CHECKPOINT",
+        checkpointType: "network",
+        label: event.label,
+        detail: `${event.networkMethod} ${event.networkUrl}`,
+      }).catch(() => {});
+
+      let matchedCall = null;
+      try {
+        // Strategy: First check window.__wfPlayNet for calls already captured before
+        // this checkpoint step. Only arm a live watcher if not yet found.
+        const found = await chrome.scripting.executeScript({
+          target: { tabId: netTab.id },
+          world: "MAIN",
+          func: (targetUrl, targetMethod, timeoutMs) => {
+            // 1. Retroactive check
+            const calls = window.__wfPlayNet || [];
+            const past = calls.find(c =>
+              c.url && c.url.includes(targetUrl) &&
+              (!targetMethod || c.method === targetMethod)
+            );
+            if (past) return past;
+
+            // 2. Live watcher
+            return new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                window.removeEventListener("__wf_net_capture__", handler);
+                resolve(null);
+              }, timeoutMs);
+              function handler(ev) {
+                const c = ev.detail;
+                if (c && c.url && c.url.includes(targetUrl) &&
+                    (!targetMethod || c.method === targetMethod)) {
                   clearTimeout(timer);
-                  window.fetch = _origFetch;
-                  XMLHttpRequest.prototype.open = _origOpen;
-                  XMLHttpRequest.prototype.send = _origSend;
-                  resolve(matched);
-                };
-
-                const timer = setTimeout(() => finish(false), timeoutMs);
-
-                const _origFetch = window.fetch;
-                window.fetch = function (input, init) {
-                  const url = typeof input === "string" ? input : (input instanceof Request ? input.url : String(input));
-                  const method = ((init && init.method) || (input instanceof Request && input.method) || "GET").toUpperCase();
-                  const p = _origFetch.apply(window, [input, init]);
-                  p.then(() => {
-                    if (url.includes(targetUrl) && (!targetMethod || method === targetMethod)) finish(true);
-                  }).catch(() => {});
-                  return p;
-                };
-
-                const _origOpen = XMLHttpRequest.prototype.open;
-                XMLHttpRequest.prototype.open = function (m, u) {
-                  this.__wfWatchMethod = (m || "GET").toUpperCase();
-                  this.__wfWatchUrl = u || "";
-                  return _origOpen.apply(this, arguments);
-                };
-
-                const _origSend = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.send = function () {
-                  this.addEventListener("load", () => {
-                    if (
-                      this.__wfWatchUrl &&
-                      this.__wfWatchUrl.includes(targetUrl) &&
-                      (!targetMethod || this.__wfWatchMethod === targetMethod)
-                    ) {
-                      finish(true);
-                    }
-                  });
-                  return _origSend.apply(this, arguments);
-                };
-              });
-            },
-            args: [event.networkUrl, event.networkMethod, state.playBufferMs || 8000],
-          });
-        } catch (_) {}
-
-        try {
-          const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
-          const idx = state.screenshotCount++;
-          results.screenshots[idx] = dataUrl;
-          state.screenshots[idx] = dataUrl;
-          broadcastToPopup({
-            type: "CHECKPOINT_REACHED",
-            index: idx,
-            label: event.label,
-            screenshotDataUrl: dataUrl,
-          });
-          chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-        } catch (_) {}
+                  window.removeEventListener("__wf_net_capture__", handler);
+                  resolve(c);
+                }
+              }
+              window.addEventListener("__wf_net_capture__", handler);
+            });
+          },
+          args: [event.networkUrl, event.networkMethod, Math.min(state.playBufferMs || 8000, 5000)],
+        });
+        matchedCall = found?.[0]?.result || null;
+        if (!matchedCall) {
+          console.warn("[WFPlay] network_checkpoint not matched:", event.networkMethod, event.networkUrl);
+        }
+      } catch (err) {
+        console.warn("[WFPlay] network_checkpoint error:", err);
       }
+
+      // Capture screenshot as evidence.
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
+        const idx = state.screenshotCount++;
+        results.screenshots[idx] = dataUrl;
+        state.screenshots[idx] = dataUrl;
+        // Attach full call details to the checkpoint result for the dashboard.
+        if (matchedCall) {
+          results.networkCheckpoints = results.networkCheckpoints || {};
+          results.networkCheckpoints[idx] = matchedCall;
+        }
+        broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
+        chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
+      } catch (_) {}
+
       return { ok: true };
     }
 
@@ -1307,6 +1315,16 @@ async function handlePlaybackTabSwitch(event, meta) {
   } catch (e) {
     console.warn("Could not inject player.js after tab switch:", e);
   }
+
+  // Re-inject the capture accumulator into MAIN world so it continues buffering
+  // console logs and network calls after the navigation.
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: targetTabId },
+      files: ["content/playback-capture.js"],
+      world: "MAIN",
+    });
+  } catch (_) {}
 }
 
 /**
