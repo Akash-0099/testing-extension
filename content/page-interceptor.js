@@ -54,6 +54,18 @@
     window.dispatchEvent(new CustomEvent("__wf_network_call__", { detail: entry }));
   }
 
+  // ─── Clear commands from isolated world (logs-dialog.js clear button) ────────
+  // The dialog runs in the ISOLATED world and cannot directly assign to MAIN world
+  // variables, so it sends a postMessage that we receive here and act on.
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.__wfSrc !== "__wf_dialog__") return;
+    if (e.data.type === "clear_console") {
+      window.__wfConsoleLogs = [];
+    } else if (e.data.type === "clear_network") {
+      window.__wfNetCalls = [];
+    }
+  });
+
   function serializeBody(body) {
     if (!body) return null;
     try {
@@ -86,16 +98,25 @@
 
   // ─── Console interception ────────────────────────────────────────────────────
 
+  // Re-entrancy guard: prevents the extension's own capture/serialization code
+  // from triggering another capture if it calls console.* internally.
+  let __wfCapturing = false;
+
   const LEVELS = ["log", "warn", "error", "info", "debug"];
   LEVELS.forEach(level => {
     const _orig = console[level];
     console[level] = function (...args) {
       _orig.apply(console, args);
-      if (!window.__wfRecording) return;
-      const message = args.map(a => {
-        try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
-      }).join(" ");
-      pushLog({ message, level, timestamp: Date.now(), url: location.href });
+      if (!window.__wfRecording || __wfCapturing) return;
+      __wfCapturing = true;
+      try {
+        const message = args.map(a => {
+          try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
+        }).join(" ");
+        pushLog({ message, level, timestamp: Date.now(), url: location.href });
+      } finally {
+        __wfCapturing = false;
+      }
     };
   });
 

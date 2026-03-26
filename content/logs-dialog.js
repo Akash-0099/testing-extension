@@ -89,9 +89,10 @@
     clearBtn.onclick = () => {
       DIALOGS[type].items = [];
       DIALOGS[type].selected = null;
-      // Also clear the in-page buffer so new ones start fresh
-      if (type === "console") { try { window.__wfConsoleLogs = []; } catch(_) {} }
-      else { try { window.__wfNetCalls = []; } catch(_) {} }
+      // Clear the MAIN world in-page buffer via postMessage (isolated world cannot
+      // directly assign to MAIN world variables — postMessage crosses the boundary).
+      const clearType = type === "console" ? "clear_console" : "clear_network";
+      window.postMessage({ __wfSrc: "__wf_dialog__", type: clearType }, "*");
       renderList(type);
     };
 
@@ -415,22 +416,30 @@
     btn.disabled = true;
 
     try {
+      let result;
       if (type === "console" && selected) {
-        await chrome.runtime.sendMessage({
+        result = await chrome.runtime.sendMessage({
           type: "ADD_CONSOLE_CHECKPOINT",
           logMessage: selected.message,
           label,
         });
       } else if (type === "network" && selected) {
-        await chrome.runtime.sendMessage({
+        result = await chrome.runtime.sendMessage({
           type: "ADD_NETWORK_CHECKPOINT",
           networkUrl: selected.url,
           networkMethod: selected.method,
           networkStatus: selected.status,
-          // Pass full details so the checkpoint event stores them
+          networkStatusText: selected.statusText || null,
+          networkRequestHeaders: selected.requestHeaders || null,
+          networkResponseHeaders: selected.responseHeaders || null,
           networkRequestBody: selected.requestBody || null,
+          networkResponseBody: selected.responseBody || null,
           label,
         });
+      }
+
+      if (result && result.error) {
+        throw new Error(result.error);
       }
 
       input.value = "";
@@ -447,10 +456,15 @@
       }, 1500);
       return;
     } catch (err) {
-      console.warn("Failed to add checkpoint:", err);
+      // Show error feedback on the button so the user knows the checkpoint was NOT saved.
+      btn.textContent = "Failed — retry";
+      btn.style.background = "#dc2626";
+      setTimeout(() => {
+        btn.textContent = "Add Checkpoint";
+        btn.style.background = "";
+        updateFooterState(type);
+      }, 2000);
     }
-
-    btn.textContent = "Add Checkpoint";
   }
 
   // ─── Listeners ────────────────────────────────────────────────────────────

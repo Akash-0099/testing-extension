@@ -921,6 +921,7 @@
           type: "RECORD_CONSOLE_LOG",
           log: {
             message: e.data.message,
+            level: e.data.level || "log",
             timestamp: e.data.timestamp,
             url: window.location.href,
           },

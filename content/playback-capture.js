@@ -78,15 +78,26 @@
 
   // ─── Console interception ────────────────────────────────────────────────────
 
+  // Re-entrancy guard: prevents any console.* call made inside the capture
+  // callback (e.g., during JSON serialization) from being re-captured, and
+  // also prevents extension-injected MAIN world code from polluting page logs.
+  let __wfCapturing = false;
+
   const LEVELS = ["log", "warn", "error", "info", "debug"];
   LEVELS.forEach(level => {
     const _orig = console[level];
     console[level] = function (...args) {
       _orig.apply(console, args);
-      const message = args.map(a => {
-        try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
-      }).join(" ");
-      pushLog({ message, level, timestamp: Date.now(), url: location.href });
+      if (__wfCapturing) return;
+      __wfCapturing = true;
+      try {
+        const message = args.map(a => {
+          try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
+        }).join(" ");
+        pushLog({ message, level, timestamp: Date.now(), url: location.href });
+      } finally {
+        __wfCapturing = false;
+      }
     };
   });
 

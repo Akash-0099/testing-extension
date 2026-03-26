@@ -185,6 +185,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
 
+    case "RECORD_NETWORK_CALL_WITH_BODY":
+      // Enriches the network call record from chrome.webRequest with request/response
+      // body data that only the MAIN world fetch/XHR interceptor can see.
+      readyPromise.then(() => {
+        if (state.mode === "recording") {
+          const tid = sender.tab?.id;
+          if (tid) {
+            const call = msg.call;
+            state.networkCalls[tid] = state.networkCalls[tid] || [];
+            // Try to find the matching webRequest entry and back-fill the body.
+            // Match on URL + method; use the most recent matching call if multiple exist.
+            const existing = state.networkCalls[tid];
+            let merged = false;
+            for (let i = existing.length - 1; i >= 0; i--) {
+              if (existing[i].url === call.url && existing[i].method === call.method) {
+                existing[i].requestBody = call.requestBody || null;
+                merged = true;
+                break;
+              }
+            }
+            if (!merged && existing.length < 500) {
+              existing.push(call);
+            }
+            chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+          }
+        }
+        sendResponse({ ok: true });
+      });
+      return true;
+
     case "GET_CONSOLE_LOGS":
       sendResponse({ logs: state.consoleLogs[sender.tab?.id] || [] });
       return false;
@@ -222,7 +252,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case "ADD_NETWORK_CHECKPOINT":
-      handleAddNetworkCheckpoint(msg.networkUrl, msg.networkMethod, msg.networkStatus, msg.label, sendResponse);
+      handleAddNetworkCheckpoint(
+        msg.networkUrl,
+        msg.networkMethod,
+        msg.networkStatus,
+        msg.networkStatusText || null,
+        msg.networkRequestHeaders || null,
+        msg.networkResponseHeaders || null,
+        msg.networkRequestBody || null,
+        msg.networkResponseBody || null,
+        msg.label,
+        sendResponse,
+      );
       return true;
 
     case "START_PLAYBACK":
@@ -398,6 +439,7 @@ function handleRecordEvent(event) {
  * @param {Function} sendResponse - Callback to resolve the extension message.
  */
 async function handleAddCheckpoint(label, sendResponse) {
+  await readyPromise;
   if (state.mode !== "recording") {
     sendResponse({ error: "Not recording" });
     return;
@@ -451,6 +493,7 @@ async function handleAddCheckpoint(label, sendResponse) {
  * @param {Function} sendResponse
  */
 async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
+  await readyPromise;
   if (state.mode !== "recording") {
     sendResponse({ error: "Not recording" });
     return;
@@ -491,7 +534,8 @@ async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
  * @param {string} label - Human-readable name.
  * @param {Function} sendResponse
  */
-async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, label, sendResponse) {
+async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, sendResponse) {
+  await readyPromise;
   if (state.mode !== "recording") {
     sendResponse({ error: "Not recording" });
     return;
@@ -510,6 +554,11 @@ async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStat
     networkUrl,
     networkMethod,
     networkStatus,
+    networkStatusText: networkStatusText || null,
+    networkRequestHeaders: networkRequestHeaders || null,
+    networkResponseHeaders: networkResponseHeaders || null,
+    networkRequestBody: networkRequestBody || null,
+    networkResponseBody: networkResponseBody || null,
     url: tab.url,
     timestamp: Date.now(),
   };
@@ -1020,7 +1069,31 @@ async function saveRunToDashboard(workflowId, events, screenshots, playedAt, sta
   const checkpoints = {};
   for (const [k, v] of Object.entries(screenshots || {})) {
     const cp = checkpointEvents[parseInt(k)];
-    checkpoints[k] = { dataUrl: v, label: cp?.label ?? `Checkpoint ${parseInt(k) + 1}` };
+    let checkpointType = "screenshot";
+    let capturedData = null;
+    if (cp?.type === "console_checkpoint") {
+      checkpointType = "console";
+      capturedData = cp.logMessage ?? null;
+    } else if (cp?.type === "network_checkpoint") {
+      checkpointType = "network";
+      // Store the full network call details so the dashboard can show them.
+      capturedData = JSON.stringify({
+        url: cp.networkUrl,
+        method: cp.networkMethod,
+        status: cp.networkStatus,
+        statusText: cp.networkStatusText ?? null,
+        requestHeaders: cp.networkRequestHeaders ?? null,
+        responseHeaders: cp.networkResponseHeaders ?? null,
+        requestBody: cp.networkRequestBody ?? null,
+        responseBody: cp.networkResponseBody ?? null,
+      });
+    }
+    checkpoints[k] = {
+      dataUrl: v,
+      label: cp?.label ?? `Checkpoint ${parseInt(k) + 1}`,
+      checkpointType,
+      capturedData,
+    };
   }
   const body = {
     workflowId,
