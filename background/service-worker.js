@@ -71,7 +71,7 @@ async function setRecordingIdle() {
   try {
     await chrome.storage.local.set({ wfMode: "idle" });
     await chrome.storage.local.remove(["wfEvents", "wfScreenshotCount"]);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 /**
@@ -88,7 +88,7 @@ async function persistEvents() {
       wfEvents: state.events,
       wfScreenshotCount: state.screenshotCount,
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // ─── SW wake-up: restore in-memory state from local storage ──────────────────
@@ -113,7 +113,7 @@ const readyPromise = new Promise(r => { _readyResolve = r; });
       state.events = stored.wfEvents || [];
       state.screenshotCount = stored.wfScreenshotCount || 0;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   // Restore network calls from session storage (survives SW restarts within the browser session).
   try {
@@ -121,7 +121,7 @@ const readyPromise = new Promise(r => { _readyResolve = r; });
     if (session.wfNetworkCalls) {
       state.networkCalls = session.wfNetworkCalls;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   _readyResolve();
 })();
@@ -234,8 +234,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       state.workflowsToPlay = [];
       state.workflowToPlay = null;
       chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-        if (tab) chrome.tabs.sendMessage(tab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
-      }).catch(() => {});
+        if (tab) chrome.tabs.sendMessage(tab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => { });
+      }).catch(() => { });
       broadcastToPopup({ type: "PLAYBACK_STOPPED" });
       sendResponse({ mode: state.mode, eventCount: state.events.length });
       return false;
@@ -305,7 +305,7 @@ async function handleStopRecording(sendResponse) {
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
-  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => { });
 
   sendResponse({ ok: true, events: state.events, screenshots: state.screenshots });
 
@@ -335,7 +335,7 @@ async function handleRestartRecording(sendResponse) {
   broadcastDialogStateToActiveTab();
 
   await persistEvents();
-  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => { });
 
   sendResponse({ ok: true });
 }
@@ -359,7 +359,7 @@ async function handleDiscardRecording(sendResponse) {
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
-  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  chrome.storage.session.remove("wfNetworkCalls").catch(() => { });
 
   sendResponse({ ok: true });
 }
@@ -565,9 +565,9 @@ async function broadcastDialogStateToActiveTab() {
         type: "SYNC_DIALOG_STATE",
         consoleOpen: state.dialogState.consoleOpen,
         networkOpen: state.dialogState.networkOpen
-      }).catch(() => {});
+      }).catch(() => { });
     }
-  } catch (e) {}
+  } catch (e) { }
 }
 
 /**
@@ -625,7 +625,7 @@ async function activateTabRecorder(tabId, action) {
         world: "MAIN",
         func: () => { window.__wfRecording = false; },
       });
-    } catch (_) {}
+    } catch (_) { }
 
     await new Promise(r => setTimeout(r, 100));
 
@@ -643,7 +643,7 @@ async function activateTabRecorder(tabId, action) {
       if (activeTabs.length && activeTabs[0].id === tabId) {
         broadcastDialogStateToActiveTab();
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -665,9 +665,9 @@ function recordNetworkCall(tabId, call) {
     state.networkCalls[tabId] = state.networkCalls[tabId] || [];
     if (state.networkCalls[tabId].length < 500) {
       state.networkCalls[tabId].push(call);
-      chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+      chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => { });
     }
-    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call }).catch(() => { });
   });
 }
 
@@ -720,7 +720,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     broadcastToPopup({ type: "EVENT_RECORDED", count: state.events.length });
 
     await activateTabRecorder(activeInfo.tabId, "start");
-  } catch (_) {}
+  } catch (_) { }
 });
 
 /**
@@ -749,13 +749,13 @@ chrome.webNavigation.onCommitted.addListener((details) => {
   if (state.mode !== "recording") return;
   if (details.frameId !== 0) return;
   if (details.transitionType === "reload") {
-     state.events.push({
-       type: "reload",
-       url: details.url,
-       timestamp: Date.now()
-     });
-     persistEvents();
-     broadcastToPopup({ type: "EVENT_RECORDED", count: state.events.length });
+    state.events.push({
+      type: "reload",
+      url: details.url,
+      timestamp: Date.now()
+    });
+    persistEvents();
+    broadcastToPopup({ type: "EVENT_RECORDED", count: state.events.length });
   }
 });
 
@@ -799,7 +799,7 @@ async function handleStartPlayback(workflows, sendResponse) {
         target: { tabId: state.playbackTabId },
         files: ["content/player.js"]
       });
-    } catch (e) {}
+    } catch (e) { }
 
     // Inject the playback capture accumulator into MAIN world BEFORE any steps run.
     // This ensures console logs and network calls fired by step-1's actions are already
@@ -810,7 +810,7 @@ async function handleStartPlayback(workflows, sendResponse) {
         files: ["content/playback-capture.js"],
         world: "MAIN",
       });
-    } catch (e) {}
+    } catch (e) { }
   }
 
   sendResponse({ ok: true });
@@ -837,14 +837,14 @@ async function runPlaybackQueue() {
       break;
     }
   }
-  
+
   if (state.mode === "playing") {
     state.mode = "idle";
     if (!anyFailed) {
       try {
         const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
-      } catch (_) {}
+        if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => { });
+      } catch (_) { }
       // Only tell the popup the queue finished cleanly when nothing failed.
       // WORKFLOW_PLAYBACK_FAILED was already broadcast for the failing workflow,
       // so the popup already knows — sending QUEUE_COMPLETE on top would overwrite
@@ -869,9 +869,10 @@ async function runSinglePlayback() {
   if (!workflow) return "aborted";
 
   const events = workflow.events;
-  const results = { screenshots: {} };
+  const results = { checkpoints: {} };
   let runStatus = "passed";
   let failedStep = null;
+  let cpIndexCounter = 0;
 
   for (let i = 0; i < events.length; i++) {
     if (state.mode !== "playing") {
@@ -887,33 +888,37 @@ async function runSinglePlayback() {
     const label = event.type === "checkpoint"
       ? `Screenshot: ${event.label}`
       : event.type === "console_checkpoint"
-      ? `Console: ${event.label}`
-      : event.type === "network_checkpoint"
-      ? `Network: ${event.label}`
-      : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
+        ? `Console: ${event.label}`
+        : event.type === "network_checkpoint"
+          ? `Network: ${event.label}`
+          : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
 
     try {
       const [hudTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (hudTab) {
         if (event.type === "tab_switch") {
-          chrome.tabs.sendMessage(hudTab.id, { type: "PLAYBACK_HUD_HIDE" }).catch(() => {});
+          chrome.tabs.sendMessage(hudTab.id, { type: "PLAYBACK_HUD_HIDE" }).catch(() => { });
         } else {
           chrome.tabs.sendMessage(hudTab.id, {
             type: "PLAYBACK_HUD_UPDATE",
             label,
             progress: i + 1,
             total: events.length,
-          }).catch(() => {});
+          }).catch(() => { });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
+
+    const isCp = event.type === 'checkpoint' || event.type === 'console_checkpoint' || event.type === 'network_checkpoint';
+    const currentCpIndex = isCp ? cpIndexCounter++ : -1;
 
     let dispatchResult = { ok: true };
     try {
       dispatchResult = await dispatchPlaybackEvent(event, results, {
         label,
         progress: i + 1,
-        total: events.length
+        total: events.length,
+        cpIndex: currentCpIndex
       });
     } catch (err) {
       dispatchResult = { ok: false, reason: "exception" };
@@ -940,9 +945,9 @@ async function runSinglePlayback() {
           chrome.tabs.sendMessage(hudTab.id, {
             type: "PLAYBACK_HUD_FAIL",
             reason: `Action failed: ${dispatchResult.reason || "unknown error"}`
-          }).catch(() => {});
+          }).catch(() => { });
         }
-      } catch (_) {}
+      } catch (_) { }
 
       break;
     }
@@ -966,7 +971,7 @@ async function runSinglePlayback() {
     saveRunToDashboard(
       workflow._dashboardId,
       workflow.events || [],
-      results.screenshots,
+      results.checkpoints,
       playedAt,
       runStatus,
       failedStep,
@@ -1012,20 +1017,12 @@ async function saveToDashboard(events, screenshots) {
  * Bundles the checkpoints validated during the automated run and posts them against the `workflowId` 
  * to serve as proof-of-work/QA artifacts on the dashboard.
  */
-async function saveRunToDashboard(workflowId, events, screenshots, playedAt, status = 'passed', failedStep = null) {
-  // Derive labels from the actual checkpoint events so the run reflects what was recorded.
-  const checkpointEvents = (events || []).filter(e =>
-    e.type === 'checkpoint' || e.type === 'console_checkpoint' || e.type === 'network_checkpoint'
-  );
-  const checkpoints = {};
-  for (const [k, v] of Object.entries(screenshots || {})) {
-    const cp = checkpointEvents[parseInt(k)];
-    checkpoints[k] = { dataUrl: v, label: cp?.label ?? `Checkpoint ${parseInt(k) + 1}` };
-  }
+async function saveRunToDashboard(workflowId, events, checkpointsToUpload, playedAt, status = 'passed', failedStep = null) {
+  // Use the pre-built checkpoints containing checkpointType, dataUrl, and capturedData
   const body = {
     workflowId,
     playedAt,
-    checkpoints,
+    checkpoints: checkpointsToUpload || {},
     status,
     failedEventIndex: failedStep?.index ?? null,
     failedEventType: failedStep?.type ?? null,
@@ -1105,16 +1102,22 @@ async function dispatchPlaybackEvent(event, results, meta) {
         try {
           const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
           const idx = state.screenshotCount++;
-          results.screenshots[idx] = dataUrl;
           state.screenshots[idx] = dataUrl;
+          if (meta.cpIndex >= 0) {
+            results.checkpoints[meta.cpIndex] = {
+              checkpointType: "screenshot",
+              label: event.label,
+              dataUrl
+            };
+          }
           broadcastToPopup({
             type: "CHECKPOINT_REACHED",
             index: idx,
             label: event.label,
             screenshotDataUrl: dataUrl,
           });
-          chrome.tabs.sendMessage(tab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-        } catch (err) {}
+          chrome.tabs.sendMessage(tab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => { });
+        } catch (err) { }
       }
       return { ok: true };
     }
@@ -1129,8 +1132,9 @@ async function dispatchPlaybackEvent(event, results, meta) {
         checkpointType: "console",
         label: event.label,
         detail: event.logMessage,
-      }).catch(() => {});
+      }).catch(() => { });
 
+      let matchedResult = false;
       try {
         // Strategy: First check the retroactive buffer (window.__wfPlayLogs) accumulated
         // since playback start. If the message was already logged by an earlier action,
@@ -1163,25 +1167,35 @@ async function dispatchPlaybackEvent(event, results, meta) {
           args: [event.logMessage, Math.min(state.playBufferMs || 8000, 5000)],
         });
 
-        const matched = found?.[0]?.result;
-        if (!matched) {
+        matchedResult = !!found?.[0]?.result;
+        if (!matchedResult) {
           console.warn("[WFPlay] console_checkpoint not matched:", event.logMessage);
           // Soft-pass: do not fail the workflow for a missed log checkpoint —
-          // take the screenshot anyway so the run has some evidence.
+          // register the failure in the payload so the dashboard shows Not Matched.
         }
       } catch (err) {
         console.warn("[WFPlay] console_checkpoint error:", err);
       }
 
-      // Capture screenshot as evidence regardless of match result.
+      if (meta.cpIndex >= 0) {
+        results.checkpoints[meta.cpIndex] = {
+          checkpointType: "console",
+          label: event.label,
+          capturedData: JSON.stringify({
+            capturedMessage: matchedResult ? event.logMessage : null,
+            matched: matchedResult
+          })
+        };
+      }
+
+      // Briefly snap a screenshot just for the local extension UI popup
       try {
         const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
         const idx = state.screenshotCount++;
-        results.screenshots[idx] = dataUrl;
         state.screenshots[idx] = dataUrl;
         broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
-        chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-      } catch (_) {}
+        chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => { });
+      } catch (_) { }
 
       return { ok: true };
     }
@@ -1196,7 +1210,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
         checkpointType: "network",
         label: event.label,
         detail: `${event.networkMethod} ${event.networkUrl}`,
-      }).catch(() => {});
+      }).catch(() => { });
 
       let matchedCall = null;
       try {
@@ -1223,7 +1237,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
               function handler(ev) {
                 const c = ev.detail;
                 if (c && c.url && c.url.includes(targetUrl) &&
-                    (!targetMethod || c.method === targetMethod)) {
+                  (!targetMethod || c.method === targetMethod)) {
                   clearTimeout(timer);
                   window.removeEventListener("__wf_net_capture__", handler);
                   resolve(c);
@@ -1234,28 +1248,34 @@ async function dispatchPlaybackEvent(event, results, meta) {
           },
           args: [event.networkUrl, event.networkMethod, Math.min(state.playBufferMs || 8000, 5000)],
         });
-        matchedCall = found?.[0]?.result || null;
-        if (!matchedCall) {
-          console.warn("[WFPlay] network_checkpoint not matched:", event.networkMethod, event.networkUrl);
-        }
+        const matched = found?.[0]?.result;
+        if (matched) matchedCall = matched;
+        else console.warn("[WFPlay] network_checkpoint not matched:", event.networkUrl);
       } catch (err) {
         console.warn("[WFPlay] network_checkpoint error:", err);
       }
 
-      // Capture screenshot as evidence.
+      if (meta.cpIndex >= 0) {
+        results.checkpoints[meta.cpIndex] = {
+          checkpointType: "network",
+          label: event.label,
+          capturedData: JSON.stringify({
+            capturedUrl: matchedCall ? matchedCall.url : null,
+            capturedMethod: matchedCall ? matchedCall.method : null,
+            capturedStatus: matchedCall ? matchedCall.status : null,
+            matched: !!matchedCall
+          })
+        };
+      }
+
+      // Briefly snap a screenshot just for the local extension UI popup
       try {
         const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
         const idx = state.screenshotCount++;
-        results.screenshots[idx] = dataUrl;
         state.screenshots[idx] = dataUrl;
-        // Attach full call details to the checkpoint result for the dashboard.
-        if (matchedCall) {
-          results.networkCheckpoints = results.networkCheckpoints || {};
-          results.networkCheckpoints[idx] = matchedCall;
-        }
         broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
-        chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-      } catch (_) {}
+        chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => { });
+      } catch (_) { }
 
       return { ok: true };
     }
@@ -1310,7 +1330,7 @@ async function handlePlaybackTabSwitch(event, meta) {
         label: meta.label,
         progress: meta.progress,
         total: meta.total,
-      }).catch(() => {});
+      }).catch(() => { });
     }
   } catch (e) {
     console.warn("Could not inject player.js after tab switch:", e);
@@ -1324,7 +1344,7 @@ async function handlePlaybackTabSwitch(event, meta) {
       files: ["content/playback-capture.js"],
       world: "MAIN",
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 /**
@@ -1426,7 +1446,7 @@ function sleep(ms) {
 async function broadcastToPopup(msg) {
   try {
     await chrome.runtime.sendMessage(msg);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 /**
@@ -1488,7 +1508,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
             }
             break;
           }
-        } catch (_) {}
+        } catch (_) { }
 
         isWaiting = true;
         const stepEl = document.getElementById("__wf_hud_step__");
@@ -1531,7 +1551,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
                 return dist < Math.hypot(bx - event.x, by - event.y) ? c : best;
               });
             }
-          } catch (_) {}
+          } catch (_) { }
         }
       }
 
@@ -1548,17 +1568,17 @@ async function replayEventInPage(event, timeoutMs = 8000) {
       //     in document space. If the target is currently scrolled off-screen the page
       //     is scrolled to bring it into the viewport before the hit-test.
       if (!resolvedEl && event.x !== undefined && event.y !== undefined &&
-          (event.type === "click" || event.type === "right_click")) {
+        (event.type === "click" || event.type === "right_click")) {
         try {
           const stepEl = document.getElementById("__wf_hud_step__");
           if (stepEl) stepEl.textContent = "Trying coordinates\u2026";
 
           // Hide extension overlays so they don't intercept the hit-test.
-          const hud    = document.getElementById("__workflow_player_hud__");
+          const hud = document.getElementById("__workflow_player_hud__");
           const recInd = document.getElementById("__workflow_rec_indicator__");
-          const prevHudPE    = hud?.style.pointerEvents;
+          const prevHudPE = hud?.style.pointerEvents;
           const prevRecIndPE = recInd?.style.pointerEvents;
-          if (hud)    hud.style.pointerEvents    = "none";
+          if (hud) hud.style.pointerEvents = "none";
           if (recInd) recInd.style.pointerEvents = "none";
 
           // Prefer page-space coordinates so scroll position at playback time
@@ -1571,7 +1591,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
           // If the target is outside the current viewport, scroll it into view first.
           if (vpY < 0 || vpY > window.innerHeight || vpX < 0 || vpX > window.innerWidth) {
             window.scrollTo(
-              Math.max(0, pageX - window.innerWidth  / 2),
+              Math.max(0, pageX - window.innerWidth / 2),
               Math.max(0, pageY - window.innerHeight / 2)
             );
             await wait(100);
@@ -1582,7 +1602,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
           const hit = document.elementFromPoint(vpX, vpY);
 
           // Restore overlays.
-          if (hud)    hud.style.pointerEvents    = prevHudPE    ?? "";
+          if (hud) hud.style.pointerEvents = prevHudPE ?? "";
           if (recInd) recInd.style.pointerEvents = prevRecIndPE ?? "";
 
           if (hit && hit !== document.body && hit !== document.documentElement) {
@@ -1592,11 +1612,11 @@ async function replayEventInPage(event, timeoutMs = 8000) {
             const leafSel = leafRaw.replace(/:nth-of-type\(\d+\)/g, "").trim();
             let candidate = hit;
             if (leafSel) {
-              try { candidate = hit.closest(leafSel) || hit; } catch (_) {}
+              try { candidate = hit.closest(leafSel) || hit; } catch (_) { }
             }
             resolvedEl = candidate;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!resolvedEl) return { ok: false, reason: "element_not_found" };
@@ -1613,7 +1633,7 @@ async function replayEventInPage(event, timeoutMs = 8000) {
       try {
         const el = document.querySelector(selector);
         if (el) return el;
-      } catch (_) {}
+      } catch (_) { }
     }
     if (x !== undefined && y !== undefined) {
       return document.elementFromPoint(x, y);
