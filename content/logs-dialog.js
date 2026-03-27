@@ -23,6 +23,45 @@
     network: { id: "__wf_network_dialog__", title: "Network Calls", items: [], selected: null }
   };
 
+  function getItemKey(type, item) {
+    if (type === "console") {
+      return JSON.stringify([
+        item.timestamp || 0,
+        item.level || "log",
+        item.message || "",
+        item.url || ""
+      ]);
+    }
+    return JSON.stringify([
+      item.timestamp || 0,
+      item.method || "GET",
+      item.url || "",
+      item.status || 0
+    ]);
+  }
+
+  function replaceItems(type, items) {
+    const seen = new Set();
+    DIALOGS[type].items = [];
+    (items || []).forEach((item) => {
+      const key = getItemKey(type, item);
+      if (seen.has(key)) return;
+      seen.add(key);
+      DIALOGS[type].items.push(item);
+    });
+  }
+
+  function upsertItem(type, item) {
+    const key = getItemKey(type, item);
+    const idx = DIALOGS[type].items.findIndex((existing) => getItemKey(type, existing) === key);
+    if (idx >= 0) {
+      DIALOGS[type].items[idx] = { ...DIALOGS[type].items[idx], ...item };
+    } else {
+      DIALOGS[type].items.push(item);
+    }
+    if (DIALOGS[type].items.length > 200) DIALOGS[type].items.shift();
+  }
+
   // ─── Dialog Factory ───────────────────────────────────────────────────────
 
   function createDialog(type) {
@@ -93,6 +132,10 @@
       // directly assign to MAIN world variables — postMessage crosses the boundary).
       const clearType = type === "console" ? "clear_console" : "clear_network";
       window.postMessage({ __wfSrc: "__wf_dialog__", type: clearType }, "*");
+      try {
+        const action = type === "console" ? "CLEAR_CONSOLE_LOGS" : "CLEAR_NETWORK_CALLS";
+        chrome.runtime.sendMessage({ type: action }).catch(() => {});
+      } catch (_) {}
       renderList(type);
     };
 
@@ -381,16 +424,26 @@
 
   // ─── Core Logic & Interactivity ───────────────────────────────────────────
 
-  function showDialog(type) {
+  async function hydrateDialog(type) {
+    try {
+      if (type === "console") {
+        const res = await chrome.runtime.sendMessage({ type: "GET_CONSOLE_LOGS" });
+        replaceItems(type, res?.logs || []);
+      } else {
+        const res = await chrome.runtime.sendMessage({ type: "GET_NETWORK_CALLS" });
+        replaceItems(type, res?.calls || []);
+      }
+    } catch (_) {}
+  }
+
+  async function showDialog(type) {
     const dialog = createDialog(type);
     dialog.style.display = "flex";
     dialog.style.zIndex  = "2147483648";
     const other = document.getElementById(DIALOGS[type === "console" ? "network" : "console"].id);
     if (other) other.style.zIndex = "2147483647";
 
-    // Render whatever has already been accumulated via postMessage since recording started.
-    // (window.__wfConsoleLogs / window.__wfNetCalls live in MAIN world and are not directly
-    //  readable here in the ISOLATED world — postMessage is the only cross-world bridge.)
+    await hydrateDialog(type);
     renderList(type);
 
     // Auto-scroll to bottom
@@ -508,8 +561,7 @@
         timestamp: e.data.timestamp,
         url:       e.data.url || window.location.href,
       };
-      DIALOGS.console.items.push(entry);
-      if (DIALOGS.console.items.length > 200) DIALOGS.console.items.shift();
+      upsertItem("console", entry);
 
       const dialog = document.getElementById(DIALOGS.console.id);
       if (dialog && dialog.style.display === "flex") {
@@ -531,8 +583,7 @@
         responseBody:    e.data.responseBody    || null,
         timestamp:       e.data.timestamp,
       };
-      DIALOGS.network.items.push(entry);
-      if (DIALOGS.network.items.length > 200) DIALOGS.network.items.shift();
+      upsertItem("network", entry);
 
       const dialog = document.getElementById(DIALOGS.network.id);
       if (dialog && dialog.style.display === "flex") {
@@ -543,6 +594,29 @@
         }
       }
     }
+  });
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type !== "NETWORK_CALL_LIVE" || !msg.call) return false;
+
+    const entry = {
+      url:             msg.call.url,
+      method:          msg.call.method,
+      status:          msg.call.status,
+      statusText:      msg.call.statusText || "",
+      requestHeaders:  msg.call.requestHeaders || {},
+      requestBody:     msg.call.requestBody || null,
+      responseHeaders: msg.call.responseHeaders || {},
+      responseBody:    msg.call.responseBody || null,
+      timestamp:       msg.call.timestamp,
+    };
+    upsertItem("network", entry);
+
+    const dialog = document.getElementById(DIALOGS.network.id);
+    if (dialog && dialog.style.display === "flex") {
+      renderList("network");
+    }
+    return false;
   });
 
 })();

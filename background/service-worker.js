@@ -223,6 +223,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ calls: state.networkCalls[sender.tab?.id] || [] });
       return false;
 
+    case "CLEAR_CONSOLE_LOGS":
+      if (sender.tab?.id) {
+        state.consoleLogs[sender.tab.id] = [];
+      }
+      sendResponse({ ok: true });
+      return false;
+
+    case "CLEAR_NETWORK_CALLS":
+      if (sender.tab?.id) {
+        state.networkCalls[sender.tab.id] = [];
+        chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+      return false;
+
     case "TOGGLE_CONSOLE_DIALOG":
       state.dialogState.consoleOpen = !state.dialogState.consoleOpen;
       broadcastDialogStateToActiveTab();
@@ -918,7 +933,7 @@ async function runSinglePlayback() {
   if (!workflow) return "aborted";
 
   const events = workflow.events;
-  const results = { screenshots: {} };
+  const results = { checkpoints: {} };
   let runStatus = "passed";
   let failedStep = null;
 
@@ -1015,7 +1030,7 @@ async function runSinglePlayback() {
     saveRunToDashboard(
       workflow._dashboardId,
       workflow.events || [],
-      results.screenshots,
+      results.checkpoints,
       playedAt,
       runStatus,
       failedStep,
@@ -1061,38 +1076,23 @@ async function saveToDashboard(events, screenshots) {
  * Bundles the checkpoints validated during the automated run and posts them against the `workflowId` 
  * to serve as proof-of-work/QA artifacts on the dashboard.
  */
-async function saveRunToDashboard(workflowId, events, screenshots, playedAt, status = 'passed', failedStep = null) {
+async function saveRunToDashboard(workflowId, events, checkpointsByIndex, playedAt, status = 'passed', failedStep = null) {
   // Derive labels from the actual checkpoint events so the run reflects what was recorded.
   const checkpointEvents = (events || []).filter(e =>
     e.type === 'checkpoint' || e.type === 'console_checkpoint' || e.type === 'network_checkpoint'
   );
   const checkpoints = {};
-  for (const [k, v] of Object.entries(screenshots || {})) {
+  for (const [k, entry] of Object.entries(checkpointsByIndex || {})) {
     const cp = checkpointEvents[parseInt(k)];
-    let checkpointType = "screenshot";
-    let capturedData = null;
-    if (cp?.type === "console_checkpoint") {
-      checkpointType = "console";
-      capturedData = cp.logMessage ?? null;
-    } else if (cp?.type === "network_checkpoint") {
-      checkpointType = "network";
-      // Store the full network call details so the dashboard can show them.
-      capturedData = JSON.stringify({
-        url: cp.networkUrl,
-        method: cp.networkMethod,
-        status: cp.networkStatus,
-        statusText: cp.networkStatusText ?? null,
-        requestHeaders: cp.networkRequestHeaders ?? null,
-        responseHeaders: cp.networkResponseHeaders ?? null,
-        requestBody: cp.networkRequestBody ?? null,
-        responseBody: cp.networkResponseBody ?? null,
-      });
-    }
+    const checkpointType =
+      entry?.checkpointType ||
+      (cp?.type === "console_checkpoint" ? "console" :
+      cp?.type === "network_checkpoint" ? "network" : "screenshot");
     checkpoints[k] = {
-      dataUrl: v,
-      label: cp?.label ?? `Checkpoint ${parseInt(k) + 1}`,
+      dataUrl: entry?.dataUrl ?? null,
+      label: entry?.label ?? cp?.label ?? `Checkpoint ${parseInt(k) + 1}`,
       checkpointType,
-      capturedData,
+      capturedData: entry?.capturedData ?? null,
     };
   }
   const body = {
@@ -1178,7 +1178,12 @@ async function dispatchPlaybackEvent(event, results, meta) {
         try {
           const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
           const idx = state.screenshotCount++;
-          results.screenshots[idx] = dataUrl;
+          results.checkpoints[idx] = {
+            label: event.label,
+            checkpointType: "screenshot",
+            dataUrl,
+            capturedData: null,
+          };
           state.screenshots[idx] = dataUrl;
           broadcastToPopup({
             type: "CHECKPOINT_REACHED",
@@ -1204,6 +1209,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
         detail: event.logMessage,
       }).catch(() => {});
 
+      let matchedEntry = null;
       try {
         // Strategy: First check the retroactive buffer (window.__wfPlayLogs) accumulated
         // since playback start. If the message was already logged by an earlier action,
@@ -1215,19 +1221,19 @@ async function dispatchPlaybackEvent(event, results, meta) {
             // 1. Retroactive check — did this log appear before this checkpoint step?
             const logs = window.__wfPlayLogs || [];
             const match = logs.find(e => e.message && e.message.includes(targetMsg));
-            if (match) return true;
+            if (match) return match;
 
             // 2. Live watcher — wait for a future matching event (short window).
             return new Promise((resolve) => {
               const timer = setTimeout(() => {
                 window.removeEventListener("__wf_log_capture__", handler);
-                resolve(false);
+                resolve(null);
               }, timeoutMs);
               function handler(ev) {
                 if (ev.detail && ev.detail.message && ev.detail.message.includes(targetMsg)) {
                   clearTimeout(timer);
                   window.removeEventListener("__wf_log_capture__", handler);
-                  resolve(true);
+                  resolve(ev.detail);
                 }
               }
               window.addEventListener("__wf_log_capture__", handler);
@@ -1236,8 +1242,8 @@ async function dispatchPlaybackEvent(event, results, meta) {
           args: [event.logMessage, Math.min(state.playBufferMs || 8000, 5000)],
         });
 
-        const matched = found?.[0]?.result;
-        if (!matched) {
+        matchedEntry = found?.[0]?.result || null;
+        if (!matchedEntry) {
           console.warn("[WFPlay] console_checkpoint not matched:", event.logMessage);
           // Soft-pass: do not fail the workflow for a missed log checkpoint —
           // take the screenshot anyway so the run has some evidence.
@@ -1250,7 +1256,19 @@ async function dispatchPlaybackEvent(event, results, meta) {
       try {
         const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
         const idx = state.screenshotCount++;
-        results.screenshots[idx] = dataUrl;
+        results.checkpoints[idx] = {
+          label: event.label,
+          checkpointType: "console",
+          dataUrl,
+          capturedData: JSON.stringify({
+            matched: !!matchedEntry,
+            expectedMessage: event.logMessage ?? null,
+            capturedMessage: matchedEntry?.message ?? null,
+            capturedLevel: matchedEntry?.level ?? null,
+            capturedUrl: matchedEntry?.url ?? null,
+            capturedTimestamp: matchedEntry?.timestamp ?? null,
+          }),
+        };
         state.screenshots[idx] = dataUrl;
         broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
         chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
@@ -1319,13 +1337,27 @@ async function dispatchPlaybackEvent(event, results, meta) {
       try {
         const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
         const idx = state.screenshotCount++;
-        results.screenshots[idx] = dataUrl;
+        results.checkpoints[idx] = {
+          label: event.label,
+          checkpointType: "network",
+          dataUrl,
+          capturedData: JSON.stringify({
+            matched: !!matchedCall,
+            expectedUrl: event.networkUrl ?? null,
+            expectedMethod: event.networkMethod ?? null,
+            expectedStatus: event.networkStatus ?? null,
+            capturedUrl: matchedCall?.url ?? null,
+            capturedMethod: matchedCall?.method ?? null,
+            capturedStatus: matchedCall?.status ?? null,
+            capturedStatusText: matchedCall?.statusText ?? null,
+            requestHeaders: matchedCall?.requestHeaders ?? null,
+            responseHeaders: matchedCall?.responseHeaders ?? null,
+            requestBody: matchedCall?.requestBody ?? null,
+            responseBody: matchedCall?.responseBody ?? null,
+            capturedTimestamp: matchedCall?.timestamp ?? null,
+          }),
+        };
         state.screenshots[idx] = dataUrl;
-        // Attach full call details to the checkpoint result for the dashboard.
-        if (matchedCall) {
-          results.networkCheckpoints = results.networkCheckpoints || {};
-          results.networkCheckpoints[idx] = matchedCall;
-        }
         broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
         chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
       } catch (_) {}
