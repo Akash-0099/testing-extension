@@ -25,8 +25,8 @@
   if (window.__wfPlayCaptureInstalled) return;
   window.__wfPlayCaptureInstalled = true;
 
-  const MAX_LOGS = 2000;
-  const MAX_NET  = 500;
+  const MAX_LOGS = 200;
+  const MAX_NET  = 200;
   const MAX_BODY = 64 * 1024; // 64 KB response body cap
 
   window.__wfPlayLogs = window.__wfPlayLogs || [];

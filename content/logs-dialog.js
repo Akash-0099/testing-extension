@@ -5,10 +5,8 @@
  * They run independently and can be on-screen at the same time.
  *
  * Strategy:
- * - Console logs: listened via CustomEvent("__wf_console_log__") from page-interceptor.js (MAIN world)
- * - Network calls: listened via CustomEvent("__wf_network_call__") from page-interceptor.js (MAIN world)
- * - On dialog open, buffers are seeded directly from window.__wfConsoleLogs / window.__wfNetCalls
- *   (no round-trip to the service worker)
+ * - Console dialog: seeded and updated from the page's MAIN-world console buffer
+ * - Network dialog: seeded and updated from the service worker's merged network cache
  * - Network rows show full request/response details in a collapsible panel on selection
  */
 
@@ -40,26 +38,231 @@
     ]);
   }
 
+  function networkDetailScore(item) {
+    if (!item) return 0;
+    let score = 0;
+    if (item.statusText) score += 1;
+    if (item.requestBody != null) score += 2;
+    if (item.responseBody != null) score += 2;
+    if (item.requestHeaders && Object.keys(item.requestHeaders).length > 0) score += 2;
+    if (item.responseHeaders && Object.keys(item.responseHeaders).length > 0) score += 2;
+    return score;
+  }
+
+  function canMergeNetworkItems(a, b, windowMs = 1500) {
+    if (!a || !b) return false;
+    if ((a.url || null) !== (b.url || null)) return false;
+    if ((a.method || "GET") !== (b.method || "GET")) return false;
+    if (a.status != null && b.status != null && a.status !== b.status) return false;
+    const ta = typeof a.timestamp === "number" ? a.timestamp : null;
+    const tb = typeof b.timestamp === "number" ? b.timestamp : null;
+    if (ta != null && tb != null && Math.abs(ta - tb) > windowMs) return false;
+    return true;
+  }
+
+  function mergeNetworkItems(existing, incoming) {
+    const timestamps = [existing?.timestamp, incoming?.timestamp].filter((value) => typeof value === "number");
+    return {
+      ...existing,
+      ...incoming,
+      status: incoming?.status ?? existing?.status ?? null,
+      statusText: incoming?.statusText ?? existing?.statusText ?? null,
+      requestHeaders: (incoming?.requestHeaders && Object.keys(incoming.requestHeaders).length > 0)
+        ? incoming.requestHeaders
+        : existing?.requestHeaders ?? {},
+      requestBody: incoming?.requestBody ?? existing?.requestBody ?? null,
+      responseHeaders: (incoming?.responseHeaders && Object.keys(incoming.responseHeaders).length > 0)
+        ? incoming.responseHeaders
+        : existing?.responseHeaders ?? {},
+      responseBody: incoming?.responseBody ?? existing?.responseBody ?? null,
+      timestamp: timestamps.length > 0 ? Math.min(...timestamps) : incoming?.timestamp ?? existing?.timestamp ?? null,
+    };
+  }
+
   function replaceItems(type, items) {
-    const seen = new Set();
     DIALOGS[type].items = [];
-    (items || []).forEach((item) => {
-      const key = getItemKey(type, item);
-      if (seen.has(key)) return;
-      seen.add(key);
-      DIALOGS[type].items.push(item);
-    });
+    (items || []).forEach((item) => upsertItem(type, item));
   }
 
   function upsertItem(type, item) {
+    if (type === "network") {
+      let bestIndex = -1;
+      let bestScore = -1;
+      for (let i = DIALOGS.network.items.length - 1; i >= 0; i--) {
+        if (!canMergeNetworkItems(DIALOGS.network.items[i], item)) continue;
+        const score = networkDetailScore(DIALOGS.network.items[i]);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = i;
+        }
+      }
+
+      if (bestIndex >= 0) {
+        const previous = DIALOGS.network.items[bestIndex];
+        const nextItem = mergeNetworkItems(previous, item);
+        DIALOGS.network.items[bestIndex] = nextItem;
+        if (DIALOGS.network.selected && canMergeNetworkItems(DIALOGS.network.selected, item)) {
+          DIALOGS.network.selected = nextItem;
+        }
+        return;
+      }
+    }
+
     const key = getItemKey(type, item);
     const idx = DIALOGS[type].items.findIndex((existing) => getItemKey(type, existing) === key);
     if (idx >= 0) {
-      DIALOGS[type].items[idx] = { ...DIALOGS[type].items[idx], ...item };
+      const nextItem = { ...DIALOGS[type].items[idx], ...item };
+      DIALOGS[type].items[idx] = nextItem;
+      if (DIALOGS[type].selected && getItemKey(type, DIALOGS[type].selected) === key) {
+        DIALOGS[type].selected = nextItem;
+      }
     } else {
       DIALOGS[type].items.push(item);
     }
     if (DIALOGS[type].items.length > 200) DIALOGS[type].items.shift();
+  }
+
+  function createCheckpointId() {
+    try {
+      return crypto.randomUUID();
+    } catch (_) {
+      return `checkpoint-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  }
+
+  function requestConsoleSnapshot(timeoutMs = 400) {
+    const requestId = createCheckpointId();
+
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        window.removeEventListener("message", onMessage);
+        reject(new Error("Snapshot timed out"));
+      }, timeoutMs);
+
+      function onMessage(event) {
+        if (!event.data || event.data.__wfSrc !== "__wf_interceptor__") return;
+        if (event.data.type !== "console_snapshot" || event.data.requestId !== requestId) return;
+        window.clearTimeout(timer);
+        window.removeEventListener("message", onMessage);
+        resolve(Array.isArray(event.data.items) ? event.data.items : []);
+      }
+
+      window.addEventListener("message", onMessage);
+      window.postMessage({ __wfSrc: "__wf_dialog__", type: "snapshot_console", requestId }, "*");
+    });
+  }
+
+  function truncateValue(value, maxLen = 2000) {
+    if (typeof value !== "string") return value ?? null;
+    return value.length > maxLen ? value.slice(0, maxLen) : value;
+  }
+
+  function sanitizeHeaders(headers, maxKeys = 24, maxValueLen = 160) {
+    const obj = headers && typeof headers === "object" ? headers : {};
+    return Object.fromEntries(
+      Object.entries(obj)
+        .slice(0, maxKeys)
+        .map(([key, value]) => [key, truncateValue(typeof value === "string" ? value : String(value), maxValueLen)])
+    );
+  }
+
+  function sanitizeCheckpointIntent(event) {
+    if (!event) return event;
+    if (event.type === "console_checkpoint") {
+      return {
+        ...event,
+        logMessage: truncateValue(event.logMessage, 1000),
+        logContextBefore: Array.isArray(event.logContextBefore)
+          ? event.logContextBefore.slice(-1).map((item) => ({
+              ...item,
+              message: truncateValue(item?.message, 1000),
+            }))
+          : [],
+        logContextAfter: Array.isArray(event.logContextAfter)
+          ? event.logContextAfter.slice(0, 1).map((item) => ({
+              ...item,
+              message: truncateValue(item?.message, 1000),
+            }))
+          : [],
+      };
+    }
+
+    if (event.type === "network_checkpoint") {
+      return {
+        type: event.type,
+        checkpointId: event.checkpointId,
+        label: truncateValue(event.label, 200),
+        networkUrl: truncateValue(event.networkUrl, 1000),
+        networkMethod: event.networkMethod || "GET",
+        networkStatus: event.networkStatus ?? null,
+        networkStatusText: truncateValue(event.networkStatusText, 120),
+        networkRequestBody: truncateValue(event.networkRequestBody, 2000),
+        networkResponseBody: truncateValue(event.networkResponseBody, 2000),
+        networkRequestHeaders: sanitizeHeaders(event.networkRequestHeaders),
+        networkResponseHeaders: sanitizeHeaders(event.networkResponseHeaders),
+        url: truncateValue(event.url, 1000),
+        timestamp: event.timestamp ?? Date.now(),
+      };
+    }
+
+    return event;
+  }
+
+  async function bufferCheckpointIntent(event) {
+    const stored = await chrome.storage.local.get([
+      "wfMode",
+      "wfRecordingSessionId",
+      "wfCheckpointIntents",
+    ]);
+
+    if (stored.wfMode !== "recording") {
+      throw new Error("Recording is not active");
+    }
+
+    if (!stored.wfRecordingSessionId) {
+      throw new Error("Recording session is not ready");
+    }
+
+    const existingIntents = Array.isArray(stored.wfCheckpointIntents) ? stored.wfCheckpointIntents : [];
+    const nextIntents = existingIntents
+      .filter((entry) => entry?.event?.checkpointId !== event.checkpointId)
+      .slice(-199);
+
+    nextIntents.push({
+      sessionId: stored.wfRecordingSessionId,
+      event: sanitizeCheckpointIntent(event),
+    });
+
+    await chrome.storage.local.set({ wfCheckpointIntents: nextIntents });
+  }
+
+  function hasNetworkDetailData(item) {
+    if (!item) return false;
+    return Boolean(
+      item.statusText ||
+      (item.requestHeaders && Object.keys(item.requestHeaders).length > 0) ||
+      (item.responseHeaders && Object.keys(item.responseHeaders).length > 0) ||
+      item.requestBody != null ||
+      item.responseBody != null
+    );
+  }
+
+  async function settleSelectedNetworkItem(selected, timeoutMs = 500) {
+    const key = getItemKey("network", selected);
+    let current = DIALOGS.network.items.find((item) => getItemKey("network", item) === key) || selected;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (hasNetworkDetailData(current)) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      current = DIALOGS.network.items.find((item) => getItemKey("network", item) === key) || current;
+    }
+
+    if (DIALOGS.network.selected && getItemKey("network", DIALOGS.network.selected) === key) {
+      DIALOGS.network.selected = current;
+    }
+
+    return current;
   }
 
   // ─── Dialog Factory ───────────────────────────────────────────────────────
@@ -298,7 +501,11 @@
     list.innerHTML = "";
 
     const items    = DIALOGS[type].items;
-    const selected = DIALOGS[type].selected;
+    const selectedKey = DIALOGS[type].selected ? getItemKey(type, DIALOGS[type].selected) : null;
+    const selected = selectedKey
+      ? items.find((item) => getItemKey(type, item) === selectedKey) || DIALOGS[type].selected
+      : null;
+    DIALOGS[type].selected = selected;
     const detailEl = document.getElementById(DIALOGS[type].id + "_detail");
 
     if (items.length === 0) {
@@ -312,7 +519,7 @@
     }
 
     items.forEach((item) => {
-      const isSelected = (selected === item);
+      const isSelected = selectedKey ? selectedKey === getItemKey(type, item) : false;
       const row = document.createElement("div");
       row.style.cssText = `
         padding: 7px 12px;
@@ -404,8 +611,13 @@
       list.appendChild(row);
     });
 
-    if (type === "network" && selected && detailEl && detailEl.style.display === "none") {
-      detailEl.style.display = "none"; // keep hidden if deselected
+    if (type === "network" && detailEl) {
+      if (selected) {
+        detailEl.textContent = formatDetail(selected);
+        detailEl.style.display = "block";
+      } else {
+        detailEl.style.display = "none";
+      }
     }
 
     updateFooterState(type);
@@ -427,13 +639,15 @@
   async function hydrateDialog(type) {
     try {
       if (type === "console") {
-        const res = await chrome.runtime.sendMessage({ type: "GET_CONSOLE_LOGS" });
-        replaceItems(type, res?.logs || []);
+        const items = await requestConsoleSnapshot(800);
+        replaceItems(type, items || []);
       } else {
         const res = await chrome.runtime.sendMessage({ type: "GET_NETWORK_CALLS" });
         replaceItems(type, res?.calls || []);
       }
-    } catch (_) {}
+    } catch (_) {
+      replaceItems(type, []);
+    }
   }
 
   async function showDialog(type) {
@@ -470,29 +684,119 @@
 
     try {
       let result;
+      let buffered = false;
+      let transportError = null;
+      let bufferError = null;
+      if (!selected) {
+        throw new Error("Select an entry first");
+      }
+
       if (type === "console" && selected) {
-        result = await chrome.runtime.sendMessage({
-          type: "ADD_CONSOLE_CHECKPOINT",
-          logMessage: selected.message,
-          label,
-        });
+        const selectedIndex = DIALOGS.console.items.findIndex((item) => item === selected);
+        const contextBefore = selectedIndex > 0 ? [DIALOGS.console.items[selectedIndex - 1]] : [];
+        const contextAfter = selectedIndex >= 0 && selectedIndex < DIALOGS.console.items.length - 1
+          ? [DIALOGS.console.items[selectedIndex + 1]]
+          : [];
+        const checkpointTimestamp = Date.now();
+        const checkpointId = createCheckpointId();
+        const autoLabel = label || `Console: ${(selected.message || "").slice(0, 40)}`;
+        const bufferedEvent = {
+          type: "console_checkpoint",
+          checkpointId,
+          label: autoLabel,
+          logMessage: selected.message || "",
+          logLevel: selected.level || "log",
+          logTimestamp: selected.timestamp || checkpointTimestamp,
+          logUrl: selected.url || window.location.href,
+          logContextBefore: contextBefore,
+          logContextAfter: contextAfter,
+          url: window.location.href,
+          timestamp: checkpointTimestamp,
+        };
+        try {
+          await bufferCheckpointIntent(bufferedEvent);
+          buffered = true;
+        } catch (err) {
+          bufferError = err;
+        }
+        try {
+          result = await chrome.runtime.sendMessage({
+            type: "ADD_CONSOLE_CHECKPOINT",
+            logEntry: {
+              message: selected.message,
+              level: selected.level || "log",
+              timestamp: selected.timestamp,
+              url: selected.url || window.location.href,
+            },
+            contextBefore,
+            contextAfter,
+            label: autoLabel,
+            checkpointId,
+            checkpointTimestamp,
+          });
+        } catch (err) {
+          transportError = err;
+        }
       } else if (type === "network" && selected) {
-        result = await chrome.runtime.sendMessage({
-          type: "ADD_NETWORK_CHECKPOINT",
-          networkUrl: selected.url,
-          networkMethod: selected.method,
-          networkStatus: selected.status,
-          networkStatusText: selected.statusText || null,
-          networkRequestHeaders: selected.requestHeaders || null,
-          networkResponseHeaders: selected.responseHeaders || null,
-          networkRequestBody: selected.requestBody || null,
-          networkResponseBody: selected.responseBody || null,
-          label,
-        });
+        const settledSelected = await settleSelectedNetworkItem(selected);
+        const checkpointTimestamp = Date.now();
+        const checkpointId = createCheckpointId();
+        const autoLabel = label || `Network: ${settledSelected.method || "GET"} ${(settledSelected.url || "").slice(0, 35)}`;
+        const bufferedEvent = {
+          type: "network_checkpoint",
+          checkpointId,
+          label: autoLabel,
+          networkUrl: settledSelected.url || "",
+          networkMethod: settledSelected.method || "GET",
+          networkStatus: settledSelected.status ?? null,
+          networkStatusText: settledSelected.statusText || null,
+          networkRequestHeaders: settledSelected.requestHeaders || null,
+          networkResponseHeaders: settledSelected.responseHeaders || null,
+          networkRequestBody: settledSelected.requestBody || null,
+          networkResponseBody: settledSelected.responseBody || null,
+          url: window.location.href,
+          timestamp: checkpointTimestamp,
+        };
+        try {
+          await bufferCheckpointIntent(bufferedEvent);
+          buffered = true;
+        } catch (err) {
+          bufferError = err;
+        }
+        try {
+          result = await chrome.runtime.sendMessage({
+            type: "ADD_NETWORK_CHECKPOINT",
+            networkUrl: settledSelected.url,
+            networkMethod: settledSelected.method,
+            networkStatus: settledSelected.status,
+            networkStatusText: settledSelected.statusText || null,
+            networkRequestHeaders: settledSelected.requestHeaders || null,
+            networkResponseHeaders: settledSelected.responseHeaders || null,
+            networkRequestBody: settledSelected.requestBody || null,
+            networkResponseBody: settledSelected.responseBody || null,
+            label: autoLabel,
+            checkpointId,
+            checkpointTimestamp,
+          });
+        } catch (err) {
+          transportError = err;
+        }
       }
 
       if (result && result.error) {
         throw new Error(result.error);
+      }
+
+      if (bufferError && !result?.ok && !transportError) {
+        throw bufferError;
+      }
+
+      if (transportError && !buffered) {
+        throw transportError;
+      }
+
+      if (!buffered && !result?.ok) {
+        throw new Error("Checkpoint was not saved");
       }
 
       input.value = "";
@@ -571,28 +875,6 @@
           list.scrollTop = list.scrollHeight;
         }
       }
-    } else if (e.data.type === "network_call") {
-      const entry = {
-        url:             e.data.url,
-        method:          e.data.method,
-        status:          e.data.status,
-        statusText:      e.data.statusText,
-        requestHeaders:  e.data.requestHeaders  || {},
-        requestBody:     e.data.requestBody     || null,
-        responseHeaders: e.data.responseHeaders || {},
-        responseBody:    e.data.responseBody    || null,
-        timestamp:       e.data.timestamp,
-      };
-      upsertItem("network", entry);
-
-      const dialog = document.getElementById(DIALOGS.network.id);
-      if (dialog && dialog.style.display === "flex") {
-        renderList("network");
-        const list = dialog.querySelector(".__wf_logs_list__");
-        if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 60) {
-          list.scrollTop = list.scrollHeight;
-        }
-      }
     }
   });
 
@@ -615,6 +897,10 @@
     const dialog = document.getElementById(DIALOGS.network.id);
     if (dialog && dialog.style.display === "flex") {
       renderList("network");
+      const list = dialog.querySelector(".__wf_logs_list__");
+      if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 60) {
+        list.scrollTop = list.scrollHeight;
+      }
     }
     return false;
   });

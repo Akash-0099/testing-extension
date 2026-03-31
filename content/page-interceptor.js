@@ -8,12 +8,11 @@
  * content scripts.
  *
  * Cross-world delivery:
- *   window.postMessage(...)     → received by logs-dialog.js (ISOLATED world) for live UI updates
+ *   window.postMessage(...)     → received by recorder.js / logs-dialog.js across worlds
  *   CustomEvent (same window)  → received by playback-capture.js checkpoint watchers (MAIN world)
  *
  * Buffers maintained on the page:
- *   window.__wfConsoleLogs[]  — ring-buffer of console entries (max 1000)
- *   window.__wfNetCalls[]     — ring-buffer of full network calls (max 500)
+ *   window.__wfConsoleLogs[]  — ring-buffer of console entries (max 200)
  *
  * Guard: window.__wfInterceptorsInstalled prevents double-patching on re-injection.
  */
@@ -27,16 +26,16 @@
   if (window.__wfInterceptorsInstalled) return;
   window.__wfInterceptorsInstalled = true;
 
-  const MAX_LOGS = 1000;
-  const MAX_NET  = 500;
+  const MAX_LOGS = 200;
   const MAX_BODY = 64 * 1024; // 64 KB
 
   window.__wfConsoleLogs = window.__wfConsoleLogs || [];
-  window.__wfNetCalls    = window.__wfNetCalls    || [];
+  window.__wfConsoleGeneration = window.__wfConsoleGeneration || 0;
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  function pushLog(entry) {
+  function pushLog(entry, generation = window.__wfConsoleGeneration) {
+    if (generation !== window.__wfConsoleGeneration) return;
     window.__wfConsoleLogs.push(entry);
     if (window.__wfConsoleLogs.length > MAX_LOGS) window.__wfConsoleLogs.shift();
     // postMessage → crosses to ISOLATED world (logs-dialog.js)
@@ -46,9 +45,7 @@
   }
 
   function pushNet(entry) {
-    window.__wfNetCalls.push(entry);
-    if (window.__wfNetCalls.length > MAX_NET) window.__wfNetCalls.shift();
-    // postMessage → crosses to ISOLATED world (logs-dialog.js)
+    // postMessage → crosses to the isolated world scripts
     window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
     window.dispatchEvent(new CustomEvent("__wf_network_call__", { detail: entry }));
@@ -60,9 +57,15 @@
   window.addEventListener("message", (e) => {
     if (!e.data || e.data.__wfSrc !== "__wf_dialog__") return;
     if (e.data.type === "clear_console") {
+      window.__wfConsoleGeneration += 1;
       window.__wfConsoleLogs = [];
-    } else if (e.data.type === "clear_network") {
-      window.__wfNetCalls = [];
+    } else if (e.data.type === "snapshot_console") {
+      window.postMessage({
+        __wfSrc: "__wf_interceptor__",
+        type: "console_snapshot",
+        requestId: e.data.requestId,
+        items: (window.__wfConsoleLogs || []).slice(),
+      }, "*");
     }
   });
 
@@ -128,7 +131,6 @@
     const method = ((init && init.method) || (input instanceof Request && input.method) || "GET").toUpperCase();
     const requestHeaders = headersToObj((init && init.headers) || (input instanceof Request ? input.headers : null));
     const requestBody    = serializeBody((init && init.body) || null);
-
     return _origFetch.apply(this, arguments).then((response) => {
       if (!window.__wfRecording) return response;
 

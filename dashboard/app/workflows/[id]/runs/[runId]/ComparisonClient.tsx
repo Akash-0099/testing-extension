@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 interface Checkpoint {
   id: string
@@ -40,8 +40,16 @@ interface Run {
 export default function ComparisonClient({ run, workflowId }: { run: Run; workflowId: string }) {
   const router = useRouter()
   const [activeIndex, setActiveIndex] = useState(0)
+  const [isMounted, setIsMounted] = useState(false)
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
 
   function fmtDate(iso: string) {
+    if (!isMounted) {
+      return new Date(iso).toISOString().slice(0, 16).replace('T', ' ')
+    }
     return new Date(iso).toLocaleString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric',
       hour: '2-digit', minute: '2-digit',
@@ -100,6 +108,47 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     )
   }
 
+  function prettyValue(value: unknown): string | null {
+    if (value == null) return null
+    if (typeof value === 'string') {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2)
+      } catch {
+        return value
+      }
+    }
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
+  }
+
+  function renderLogContext(title: string, logs: any[] | null | undefined) {
+    const lines = Array.isArray(logs) ? logs.filter(Boolean) : []
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>{title}</div>
+        {lines.length === 0
+          ? monoBlock(null, 'No surrounding log')
+          : monoBlock(lines.map((line) => {
+              const level = (line?.level || 'log').toUpperCase()
+              const message = line?.message || '—'
+              return `[${level}] ${message}`
+            }).join('\n'))}
+      </div>
+    )
+  }
+
+  function renderDetailBlock(title: string, value: unknown, placeholder: string) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>{title}</div>
+        {monoBlock(prettyValue(value), placeholder)}
+      </div>
+    )
+  }
+
   function renderComparePane() {
     if (!active) return null
     const { checkpoint: cp, recording, recordingEvent } = active
@@ -118,6 +167,10 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
               <span className="badge" style={cpTypeBadgeStyle('console')}>Console</span>
             </div>
             {monoBlock(expectedMsg, 'No log message recorded')}
+            <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+              {renderLogContext('One Log Before', captured?.expectedContextBefore)}
+              {renderLogContext('One Log After', captured?.expectedContextAfter)}
+            </div>
             <div className="compare-label">Recorded: {fmtDate(run.workflow.recordedAt)}</div>
           </div>
           <div className="compare-panel">
@@ -128,6 +181,10 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
               </span>
             </div>
             {monoBlock(capturedMsg, 'No matching log captured')}
+            <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+              {renderLogContext('One Log Before', captured?.capturedContextBefore)}
+              {renderLogContext('One Log After', captured?.capturedContextAfter)}
+            </div>
             <div className="compare-label">Played: {fmtDate(run.playedAt)}</div>
           </div>
         </div>
@@ -155,6 +212,10 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 <span className="badge" style={statusBadgeStyle(expStatus)}>{expStatus ?? '—'}</span>
               </div>
               {monoBlock(expUrl || null, 'No URL recorded')}
+              {renderDetailBlock('Request Headers', captured?.expectedRequestHeaders, 'No request headers recorded')}
+              {renderDetailBlock('Request Payload', captured?.expectedRequestBody, 'No request payload recorded')}
+              {renderDetailBlock('Response Headers', captured?.expectedResponseHeaders, 'No response headers recorded')}
+              {renderDetailBlock('Response Payload', captured?.expectedResponseBody, 'No response payload recorded')}
             </div>
             <div className="compare-label">Recorded: {fmtDate(run.workflow.recordedAt)}</div>
           </div>
@@ -171,6 +232,10 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 <span className="badge" style={statusBadgeStyle(capStatus ?? undefined)}>{capStatus ?? '—'}</span>
               </div>
               {monoBlock(capUrl, 'No matching request captured')}
+              {renderDetailBlock('Request Headers', captured?.requestHeaders, 'No request headers captured')}
+              {renderDetailBlock('Request Payload', captured?.requestBody, 'No request payload captured')}
+              {renderDetailBlock('Response Headers', captured?.responseHeaders, 'No response headers captured')}
+              {renderDetailBlock('Response Payload', captured?.responseBody, 'No response payload captured')}
             </div>
             <div className="compare-label">Played: {fmtDate(run.playedAt)}</div>
           </div>

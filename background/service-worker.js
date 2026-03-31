@@ -13,13 +13,16 @@
 
 // Dashboard API base URL — update this if deploying the dashboard elsewhere
 const DASHBOARD_URL = 'http://localhost:3000';
+const RECENT_CAPTURE_WINDOW = 200;
 
 const state = {
   mode: "idle",       // 'idle' | 'recording' | 'playing'
 
   // Recording
   workflowName: "",
+  recordingSessionId: null,
   events: [],
+  recordingCheckpoints: [],
   screenshots: {},    // stepIndex -> dataUrl (both rec & play)
   screenshotCount: 0,
   recordingTabId: null,
@@ -27,6 +30,7 @@ const state = {
   // Console / network interception (populated during recording)
   consoleLogs: {},    // { [tabId]: [{ message, timestamp, url }] }
   networkCalls: {},   // { [tabId]: [{ url, method, status, timestamp }] }
+  networkClearCutoffs: {},
   dialogState: { consoleOpen: false, networkOpen: false },
 
   // Playing
@@ -35,6 +39,277 @@ const state = {
   playbackIndex: 0,
   playbackTabId: null,
 };
+
+const RECORDING_DB_NAME = "workflow-recorder-db";
+const RECORDING_DB_VERSION = 1;
+const RECORDING_STORE_NAME = "recording_state";
+const ACTIVE_RECORDING_KEY = "active_recording";
+
+function getNetworkClearCutoff(tabId) {
+  if (!tabId) return 0;
+  return state.networkClearCutoffs?.[tabId] || 0;
+}
+
+function isStaleNetworkEntry(tabId, entry) {
+  const cutoff = getNetworkClearCutoff(tabId);
+  if (!cutoff) return false;
+  const timestamp = typeof entry?.timestamp === "number" ? entry.timestamp : 0;
+  return timestamp > 0 && timestamp <= cutoff;
+}
+
+function pruneNetworkEntries(tabId) {
+  if (!tabId) return [];
+  const nextItems = (state.networkCalls[tabId] || []).filter((entry) => !isStaleNetworkEntry(tabId, entry));
+  state.networkCalls[tabId] = nextItems;
+  return nextItems;
+}
+
+function openRecordingDb() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(RECORDING_DB_NAME, RECORDING_DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(RECORDING_STORE_NAME)) {
+          db.createObjectStore(RECORDING_STORE_NAME);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function readActiveRecordingSnapshotFromDb() {
+  try {
+    const db = await openRecordingDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(RECORDING_STORE_NAME, "readonly");
+      const store = tx.objectStore(RECORDING_STORE_NAME);
+      const req = store.get(ACTIVE_RECORDING_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeActiveRecordingSnapshotToDb(snapshot) {
+  try {
+    const db = await openRecordingDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(RECORDING_STORE_NAME, "readwrite");
+      const store = tx.objectStore(RECORDING_STORE_NAME);
+      store.put(snapshot, ACTIVE_RECORDING_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } catch (_) {}
+}
+
+async function clearActiveRecordingSnapshotFromDb() {
+  try {
+    const db = await openRecordingDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(RECORDING_STORE_NAME, "readwrite");
+      const store = tx.objectStore(RECORDING_STORE_NAME);
+      store.delete(ACTIVE_RECORDING_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } catch (_) {}
+}
+
+function buildAuthoritativeRecordingSnapshot() {
+  return {
+    workflowName: state.workflowName,
+    recordingSessionId: state.recordingSessionId,
+    events: state.events || [],
+    recordingCheckpoints: state.recordingCheckpoints || [],
+    screenshots: state.screenshots || {},
+    screenshotCount: state.screenshotCount || 0,
+  };
+}
+
+function isCheckpointEventType(type) {
+  return type === "checkpoint" || type === "console_checkpoint" || type === "network_checkpoint";
+}
+
+function truncateForStorage(value, maxLen = 2000) {
+  if (typeof value !== "string") return value ?? null;
+  return value.length > maxLen ? value.slice(0, maxLen) : value;
+}
+
+function sanitizeHeadersForStorage(headers, maxKeys = 24, maxValueLen = 160) {
+  const source = headers && typeof headers === "object" ? headers : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .slice(0, maxKeys)
+      .map(([key, value]) => [key, truncateForStorage(typeof value === "string" ? value : String(value), maxValueLen)])
+  );
+}
+
+function sanitizeCheckpointForStorage(item) {
+  if (!item) return item;
+  return {
+    ...item,
+    logMessage: truncateForStorage(item.logMessage, 1000),
+    networkUrl: truncateForStorage(item.networkUrl, 1000),
+    networkRequestBody: truncateForStorage(item.networkRequestBody, 2000),
+    networkResponseBody: truncateForStorage(item.networkResponseBody, 2000),
+    networkStatusText: truncateForStorage(item.networkStatusText, 120),
+    networkRequestHeaders: sanitizeHeadersForStorage(item.networkRequestHeaders),
+    networkResponseHeaders: sanitizeHeadersForStorage(item.networkResponseHeaders),
+    logContextBefore: Array.isArray(item.logContextBefore) ? item.logContextBefore.slice(-1) : [],
+    logContextAfter: Array.isArray(item.logContextAfter) ? item.logContextAfter.slice(0, 1) : [],
+  };
+}
+
+function sanitizeEventForStorage(item) {
+  return isCheckpointEventType(item?.type) ? sanitizeCheckpointForStorage(item) : item;
+}
+
+function buildRecordingSnapshotForStorage() {
+  return {
+    workflowName: state.workflowName,
+    recordingSessionId: state.recordingSessionId,
+    events: (state.events || []).map(sanitizeEventForStorage),
+    recordingCheckpoints: (state.recordingCheckpoints || []).map(sanitizeCheckpointForStorage),
+    screenshotCount: state.screenshotCount,
+  };
+}
+
+function createRecordingSessionId() {
+  try {
+    return crypto.randomUUID();
+  } catch (_) {
+    return `rec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+}
+
+function compareByTimestamp(a, b) {
+  return (a?.timestamp || 0) - (b?.timestamp || 0);
+}
+
+function networkFieldCount(call) {
+  if (!call) return 0;
+  let score = 0;
+  if (call.statusText) score += 1;
+  if (call.requestBody != null) score += 2;
+  if (call.responseBody != null) score += 2;
+  if (call.requestHeaders && Object.keys(call.requestHeaders).length > 0) score += 2;
+  if (call.responseHeaders && Object.keys(call.responseHeaders).length > 0) score += 2;
+  return score;
+}
+
+function canMergeNetworkCalls(a, b, windowMs = 1500) {
+  if (!a || !b) return false;
+  if ((a.url || null) !== (b.url || null)) return false;
+  if ((a.method || "GET") !== (b.method || "GET")) return false;
+  if (a.status != null && b.status != null && a.status !== b.status) return false;
+  const ta = typeof a.timestamp === "number" ? a.timestamp : null;
+  const tb = typeof b.timestamp === "number" ? b.timestamp : null;
+  if (ta != null && tb != null && Math.abs(ta - tb) > windowMs) return false;
+  return true;
+}
+
+function mergeNetworkCallEntries(existing, incoming) {
+  const timestamps = [existing?.timestamp, incoming?.timestamp].filter((value) => typeof value === "number");
+  return {
+    ...existing,
+    ...incoming,
+    status: incoming?.status ?? existing?.status ?? null,
+    statusText: incoming?.statusText ?? existing?.statusText ?? null,
+    requestHeaders: (incoming?.requestHeaders && Object.keys(incoming.requestHeaders).length > 0)
+      ? incoming.requestHeaders
+      : existing?.requestHeaders ?? {},
+    requestBody: incoming?.requestBody ?? existing?.requestBody ?? null,
+    responseHeaders: (incoming?.responseHeaders && Object.keys(incoming.responseHeaders).length > 0)
+      ? incoming.responseHeaders
+      : existing?.responseHeaders ?? {},
+    responseBody: incoming?.responseBody ?? existing?.responseBody ?? null,
+    timestamp: timestamps.length > 0 ? Math.min(...timestamps) : incoming?.timestamp ?? existing?.timestamp ?? null,
+    tabUrl: incoming?.tabUrl ?? existing?.tabUrl ?? null,
+  };
+}
+
+function upsertRecordedNetworkCall(tabId, call) {
+  state.networkCalls[tabId] = state.networkCalls[tabId] || [];
+  const calls = state.networkCalls[tabId];
+  let bestIndex = -1;
+  let bestScore = -1;
+
+  for (let i = calls.length - 1; i >= 0; i--) {
+    if (!canMergeNetworkCalls(calls[i], call)) continue;
+    const score = networkFieldCount(calls[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = i;
+    }
+  }
+
+  if (bestIndex >= 0) {
+    calls[bestIndex] = mergeNetworkCallEntries(calls[bestIndex], call);
+    return calls[bestIndex];
+  }
+
+  if (calls.length >= RECENT_CAPTURE_WINDOW) calls.shift();
+  calls.push(call);
+  return call;
+}
+
+async function readBufferedCheckpointIntents() {
+  try {
+    const stored = await chrome.storage.local.get("wfCheckpointIntents");
+    return Array.isArray(stored.wfCheckpointIntents) ? stored.wfCheckpointIntents : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function mergeBufferedCheckpointIntents() {
+  if (!state.recordingSessionId) return false;
+
+  const intents = await readBufferedCheckpointIntents();
+  const relevantIntents = intents.filter((entry) =>
+    entry &&
+    entry.sessionId === state.recordingSessionId &&
+    entry.event &&
+    isCheckpointEventType(entry.event.type)
+  );
+
+  if (relevantIntents.length === 0) return false;
+
+  const eventKeys = new Set((state.events || []).map(recordingItemKey));
+  const checkpointKeys = new Set((state.recordingCheckpoints || []).map(recordingItemKey));
+  let changed = false;
+
+  relevantIntents.forEach(({ event }) => {
+    const key = recordingItemKey(event);
+    if (!eventKeys.has(key)) {
+      state.events.push(event);
+      eventKeys.add(key);
+      changed = true;
+    }
+    if (!checkpointKeys.has(key)) {
+      state.recordingCheckpoints.push(event);
+      checkpointKeys.add(key);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    state.events.sort(compareByTimestamp);
+    state.recordingCheckpoints.sort(compareByTimestamp);
+  }
+
+  return changed;
+}
 
 // ─── Storage helpers (chrome.storage.LOCAL) ───────────────────────────────────
 
@@ -51,8 +326,29 @@ async function setRecordingActive() {
   try {
     await chrome.storage.local.set({
       wfMode: "recording",
+      wfRecordingSessionId: state.recordingSessionId,
       wfEvents: [],
+      wfCheckpoints: [],
+      wfCheckpointIntents: [],
       wfScreenshotCount: 0,
+    });
+    await chrome.storage.session.set({
+      wfRecordingSnapshot: {
+        workflowName: "",
+        recordingSessionId: state.recordingSessionId,
+        events: [],
+        recordingCheckpoints: [],
+        screenshotCount: 0,
+      },
+      wfNetworkClearCutoffs: {},
+    });
+    await writeActiveRecordingSnapshotToDb({
+      workflowName: "",
+      recordingSessionId: state.recordingSessionId,
+      events: [],
+      recordingCheckpoints: [],
+      screenshots: {},
+      screenshotCount: 0,
     });
   } catch (e) {
     console.error("[WFRec] setRecordingActive failed:", e);
@@ -70,7 +366,16 @@ async function setRecordingActive() {
 async function setRecordingIdle() {
   try {
     await chrome.storage.local.set({ wfMode: "idle" });
-    await chrome.storage.local.remove(["wfEvents", "wfScreenshotCount"]);
+    await chrome.storage.local.remove([
+      "wfEvents",
+      "wfCheckpoints",
+      "wfCheckpointIntents",
+      "wfRecordingSessionId",
+      "wfScreenshotCount",
+    ]);
+    await chrome.storage.session.remove("wfRecordingSnapshot");
+    await chrome.storage.session.remove("wfNetworkClearCutoffs");
+    await clearActiveRecordingSnapshotFromDb();
   } catch (_) {}
 }
 
@@ -84,10 +389,158 @@ async function setRecordingIdle() {
  */
 async function persistEvents() {
   try {
+    const storedEvents = (state.events || []).map(sanitizeEventForStorage);
+    const storedCheckpoints = (state.recordingCheckpoints || []).map(sanitizeCheckpointForStorage);
     await chrome.storage.local.set({
-      wfEvents: state.events,
+      wfRecordingSessionId: state.recordingSessionId,
+      wfEvents: storedEvents,
+      wfCheckpoints: storedCheckpoints,
       wfScreenshotCount: state.screenshotCount,
     });
+    await chrome.storage.session.set({
+      wfRecordingSnapshot: buildRecordingSnapshotForStorage(),
+    });
+    await writeActiveRecordingSnapshotToDb(buildAuthoritativeRecordingSnapshot());
+  } catch (_) {}
+}
+
+function recordingItemKey(item) {
+  if (item?.checkpointId) return `checkpoint:${item.checkpointId}`;
+  return JSON.stringify([
+    item?.type ?? null,
+    item?.label ?? null,
+    item?.timestamp ?? null,
+    item?.url ?? null,
+  ]);
+}
+
+async function appendCheckpointToRecordingState(checkpointEvent) {
+  state.events.push(checkpointEvent);
+  state.recordingCheckpoints.push(checkpointEvent);
+  state.events.sort(compareByTimestamp);
+  state.recordingCheckpoints.sort(compareByTimestamp);
+
+  const eventKey = recordingItemKey(checkpointEvent);
+
+  try {
+    await writeActiveRecordingSnapshotToDb(buildAuthoritativeRecordingSnapshot());
+
+    const session = await chrome.storage.session.get("wfRecordingSnapshot");
+    const snapshot = session.wfRecordingSnapshot || null;
+    const nextEvents = Array.isArray(state.events) ? [...state.events] : [];
+    const nextCheckpoints = Array.isArray(state.recordingCheckpoints) ? [...state.recordingCheckpoints] : [];
+
+    if (Array.isArray(snapshot?.events)) {
+      snapshot.events.forEach((item) => {
+        if (!nextEvents.some((existing) => recordingItemKey(existing) === recordingItemKey(item))) {
+          nextEvents.push(item);
+        }
+      });
+    }
+    if (Array.isArray(snapshot?.recordingCheckpoints)) {
+      snapshot.recordingCheckpoints.forEach((item) => {
+        if (!nextCheckpoints.some((existing) => recordingItemKey(existing) === recordingItemKey(item))) {
+          nextCheckpoints.push(item);
+        }
+      });
+    }
+    if (!nextEvents.some((item) => recordingItemKey(item) === eventKey)) {
+      nextEvents.push(checkpointEvent);
+    }
+    if (!nextCheckpoints.some((item) => recordingItemKey(item) === eventKey)) {
+      nextCheckpoints.push(checkpointEvent);
+    }
+
+    nextEvents.sort(compareByTimestamp);
+    nextCheckpoints.sort(compareByTimestamp);
+
+    state.events = nextEvents;
+    state.recordingCheckpoints = nextCheckpoints;
+
+    const storedEvents = nextEvents.map(sanitizeEventForStorage);
+    const storedCheckpoints = nextCheckpoints.map(sanitizeCheckpointForStorage);
+    await chrome.storage.local.set({
+      wfRecordingSessionId: state.recordingSessionId,
+      wfEvents: storedEvents,
+      wfCheckpoints: storedCheckpoints,
+      wfScreenshotCount: state.screenshotCount,
+    });
+    await chrome.storage.session.set({
+      wfRecordingSnapshot: {
+        workflowName: state.workflowName,
+        recordingSessionId: state.recordingSessionId,
+        events: storedEvents,
+        recordingCheckpoints: storedCheckpoints,
+        screenshotCount: state.screenshotCount,
+      },
+    });
+  } catch (_) {
+    await persistEvents();
+  }
+}
+
+async function hydrateRecordingStateFromStorage() {
+  try {
+    const dbSnapshot = await readActiveRecordingSnapshotFromDb();
+    if (dbSnapshot) {
+      if (dbSnapshot.recordingSessionId) {
+        state.recordingSessionId = dbSnapshot.recordingSessionId;
+      }
+      if (Array.isArray(dbSnapshot.events) && dbSnapshot.events.length > state.events.length) {
+        state.events = dbSnapshot.events;
+      }
+      if (Array.isArray(dbSnapshot.recordingCheckpoints) && dbSnapshot.recordingCheckpoints.length > state.recordingCheckpoints.length) {
+        state.recordingCheckpoints = dbSnapshot.recordingCheckpoints;
+      }
+      if (dbSnapshot.screenshots && Object.keys(dbSnapshot.screenshots).length > Object.keys(state.screenshots || {}).length) {
+        state.screenshots = dbSnapshot.screenshots;
+      }
+      if ((dbSnapshot.screenshotCount || 0) > (state.screenshotCount || 0)) {
+        state.screenshotCount = dbSnapshot.screenshotCount || 0;
+      }
+      if (dbSnapshot.workflowName) {
+        state.workflowName = dbSnapshot.workflowName;
+      }
+    }
+
+    const [session, local] = await Promise.all([
+      chrome.storage.session.get("wfRecordingSnapshot"),
+      chrome.storage.local.get(["wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount"]),
+    ]);
+
+    console.log([session,local]);
+
+    const snapshot = session.wfRecordingSnapshot || null;
+    const localEvents = Array.isArray(local.wfEvents) ? local.wfEvents : [];
+    const localCheckpoints = Array.isArray(local.wfCheckpoints) ? local.wfCheckpoints : [];
+    const sessionEvents = Array.isArray(snapshot?.events) ? snapshot.events : [];
+    const sessionCheckpoints = Array.isArray(snapshot?.recordingCheckpoints) ? snapshot.recordingCheckpoints : [];
+
+    if (!state.recordingSessionId) {
+      state.recordingSessionId = local.wfRecordingSessionId || snapshot?.recordingSessionId || null;
+    }
+
+    if (localEvents.length > sessionEvents.length && localEvents.length > state.events.length) {
+      state.events = localEvents;
+    } else if (sessionEvents.length > state.events.length) {
+      state.events = sessionEvents;
+    }
+
+    if (localCheckpoints.length > sessionCheckpoints.length && localCheckpoints.length > state.recordingCheckpoints.length) {
+      state.recordingCheckpoints = localCheckpoints;
+    } else if (sessionCheckpoints.length > state.recordingCheckpoints.length) {
+      state.recordingCheckpoints = sessionCheckpoints;
+    }
+
+    state.screenshotCount = Math.max(
+      state.screenshotCount || 0,
+      local.wfScreenshotCount || 0,
+      snapshot?.screenshotCount || 0
+    );
+
+    if (snapshot?.workflowName) {
+      state.workflowName = snapshot.workflowName;
+    }
   } catch (_) {}
 }
 
@@ -104,22 +557,67 @@ async function persistEvents() {
  */
 let _readyResolve;
 const readyPromise = new Promise(r => { _readyResolve = r; });
+let recordingMutationChain = Promise.resolve();
+
+function enqueueRecordingMutation(task) {
+  const run = recordingMutationChain.then(task, task);
+  recordingMutationChain = run.catch(() => {});
+  return run;
+}
 
 (async () => {
   try {
-    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfScreenshotCount"]);
+    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount"]);
     if (stored.wfMode === "recording") {
       state.mode = "recording";
       state.events = stored.wfEvents || [];
+      state.recordingCheckpoints = stored.wfCheckpoints || [];
+      state.recordingSessionId = stored.wfRecordingSessionId || null;
       state.screenshotCount = stored.wfScreenshotCount || 0;
     }
   } catch (_) {}
 
-  // Restore network calls from session storage (survives SW restarts within the browser session).
   try {
-    const session = await chrome.storage.session.get("wfNetworkCalls");
+    const session = await chrome.storage.session.get(["wfRecordingSnapshot", "wfNetworkCalls", "wfNetworkClearCutoffs"]);
+    const dbSnapshot = await readActiveRecordingSnapshotFromDb();
+    if (dbSnapshot) {
+      state.workflowName = dbSnapshot.workflowName || state.workflowName;
+      state.recordingSessionId = dbSnapshot.recordingSessionId || state.recordingSessionId;
+      if ((dbSnapshot.events || []).length > (state.events || []).length) {
+        state.events = dbSnapshot.events || state.events;
+      }
+      if ((dbSnapshot.recordingCheckpoints || []).length > (state.recordingCheckpoints || []).length) {
+        state.recordingCheckpoints = dbSnapshot.recordingCheckpoints || state.recordingCheckpoints;
+      }
+      if (dbSnapshot.screenshots && Object.keys(dbSnapshot.screenshots).length > Object.keys(state.screenshots || {}).length) {
+        state.screenshots = dbSnapshot.screenshots || state.screenshots;
+      }
+      state.screenshotCount = Math.max(
+        state.screenshotCount || 0,
+        dbSnapshot.screenshotCount || 0
+      );
+    }
+
+    if (session.wfRecordingSnapshot) {
+      state.workflowName = session.wfRecordingSnapshot.workflowName || state.workflowName;
+      state.recordingSessionId = session.wfRecordingSnapshot.recordingSessionId || state.recordingSessionId;
+      if ((session.wfRecordingSnapshot.events || []).length > (state.events || []).length) {
+        state.events = session.wfRecordingSnapshot.events || state.events;
+      }
+      if ((session.wfRecordingSnapshot.recordingCheckpoints || []).length > (state.recordingCheckpoints || []).length) {
+        state.recordingCheckpoints = session.wfRecordingSnapshot.recordingCheckpoints || state.recordingCheckpoints;
+      }
+      state.screenshotCount = Math.max(
+        state.screenshotCount || 0,
+        session.wfRecordingSnapshot.screenshotCount || 0
+      );
+    }
+
     if (session.wfNetworkCalls) {
       state.networkCalls = session.wfNetworkCalls;
+    }
+    if (session.wfNetworkClearCutoffs) {
+      state.networkClearCutoffs = session.wfNetworkClearCutoffs;
     }
   } catch (_) {}
 
@@ -140,30 +638,31 @@ const readyPromise = new Promise(r => { _readyResolve = r; });
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
     case "START_RECORDING":
-      handleStartRecording(msg, sendResponse);
+      enqueueRecordingMutation(() => handleStartRecording(msg, sendResponse));
       return true;
 
     case "STOP_RECORDING":
-      handleStopRecording(sendResponse);
+      enqueueRecordingMutation(() => handleStopRecording(sendResponse));
       return true;
 
     case "RECORD_EVENT":
-      readyPromise.then(() => {
+      enqueueRecordingMutation(async () => {
+        await readyPromise;
         handleRecordEvent(msg.event);
         sendResponse({ ok: true });
       });
       return true; // async response — keep message channel open
 
     case "RESTART_RECORDING":
-      handleRestartRecording(sendResponse);
+      enqueueRecordingMutation(() => handleRestartRecording(sendResponse));
       return true;
 
     case "DISCARD_RECORDING":
-      handleDiscardRecording(sendResponse);
+      enqueueRecordingMutation(() => handleDiscardRecording(sendResponse));
       return true;
 
     case "ADD_CHECKPOINT":
-      handleAddCheckpoint(msg.label, sendResponse);
+      enqueueRecordingMutation(() => handleAddCheckpoint(msg.label, sendResponse));
       return true;
 
     case "RECORD_CONSOLE_LOG":
@@ -172,7 +671,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tid = sender.tab?.id;
           if (tid) {
             state.consoleLogs[tid] = state.consoleLogs[tid] || [];
-            if (state.consoleLogs[tid].length < 500) state.consoleLogs[tid].push(msg.log);
+            if (state.consoleLogs[tid].length >= RECENT_CAPTURE_WINDOW) {
+              state.consoleLogs[tid].shift();
+            }
+            state.consoleLogs[tid].push(msg.log);
           }
         }
         sendResponse({ ok: true });
@@ -193,22 +695,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tid = sender.tab?.id;
           if (tid) {
             const call = msg.call;
-            state.networkCalls[tid] = state.networkCalls[tid] || [];
-            // Try to find the matching webRequest entry and back-fill the body.
-            // Match on URL + method; use the most recent matching call if multiple exist.
-            const existing = state.networkCalls[tid];
-            let merged = false;
-            for (let i = existing.length - 1; i >= 0; i--) {
-              if (existing[i].url === call.url && existing[i].method === call.method) {
-                existing[i].requestBody = call.requestBody || null;
-                merged = true;
-                break;
-              }
+            if (isStaleNetworkEntry(tid, call)) {
+              sendResponse({ ok: true });
+              return;
             }
-            if (!merged && existing.length < 500) {
-              existing.push(call);
-            }
+            const mergedCall = upsertRecordedNetworkCall(tid, call);
             chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+            chrome.tabs.sendMessage(tid, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
           }
         }
         sendResponse({ ok: true });
@@ -220,7 +713,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case "GET_NETWORK_CALLS":
-      sendResponse({ calls: state.networkCalls[sender.tab?.id] || [] });
+      sendResponse({ calls: pruneNetworkEntries(sender.tab?.id) });
       return false;
 
     case "CLEAR_CONSOLE_LOGS":
@@ -232,8 +725,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case "CLEAR_NETWORK_CALLS":
       if (sender.tab?.id) {
+        state.networkClearCutoffs[sender.tab.id] = Date.now();
         state.networkCalls[sender.tab.id] = [];
-        chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+        chrome.storage.session.set({
+          wfNetworkCalls: state.networkCalls,
+          wfNetworkClearCutoffs: state.networkClearCutoffs,
+        }).catch(() => {});
       }
       sendResponse({ ok: true });
       return false;
@@ -263,11 +760,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case "ADD_CONSOLE_CHECKPOINT":
-      handleAddConsoleCheckpoint(msg.logMessage, msg.label, sendResponse);
+      enqueueRecordingMutation(() => handleAddConsoleCheckpoint(
+        msg.logEntry || msg.logMessage,
+        msg.label,
+        msg.contextBefore || [],
+        msg.contextAfter || [],
+        msg.checkpointId || null,
+        msg.checkpointTimestamp || null,
+        sendResponse,
+      ));
       return true;
 
     case "ADD_NETWORK_CHECKPOINT":
-      handleAddNetworkCheckpoint(
+      enqueueRecordingMutation(() => handleAddNetworkCheckpoint(
         msg.networkUrl,
         msg.networkMethod,
         msg.networkStatus,
@@ -277,8 +782,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msg.networkRequestBody || null,
         msg.networkResponseBody || null,
         msg.label,
+        msg.checkpointId || null,
+        msg.checkpointTimestamp || null,
         sendResponse,
-      );
+      ));
       return true;
 
     case "START_PLAYBACK":
@@ -331,10 +838,12 @@ async function handleStartRecording(msg, sendResponse) {
   state.mode = "recording";
   state.recordingTabId = msg.tabId ?? null;
   state.workflowName = msg.name || "";
+  state.recordingSessionId = createRecordingSessionId();
   state.dialogState = { consoleOpen: false, networkOpen: false };
 
   // 1. Write wfMode="recording" to local storage.
   await setRecordingActive();
+  await persistEvents();
 
   // 2. Ensure content scripts are injected and activated on all tabs.
   await activateRecorderOnAllTabs();
@@ -357,16 +866,24 @@ async function handleStopRecording(sendResponse) {
     return;
   }
 
+  await hydrateRecordingStateFromStorage();
+  await mergeBufferedCheckpointIntents();
+  await persistEvents();
+  const eventsSnapshot = JSON.parse(JSON.stringify(state.events || []));
+  const checkpointsSnapshot = JSON.parse(JSON.stringify(state.recordingCheckpoints || []));
+  const screenshotsSnapshot = JSON.parse(JSON.stringify(state.screenshots || {}));
+
   state.mode = "idle";
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
   chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  chrome.storage.session.remove("wfNetworkClearCutoffs").catch(() => {});
 
-  sendResponse({ ok: true, events: state.events, screenshots: state.screenshots });
+  sendResponse({ ok: true, events: eventsSnapshot, screenshots: screenshotsSnapshot });
 
   // Auto-save to dashboard (fire-and-forget)
-  saveToDashboard(state.events, state.screenshots).catch(e => console.warn('[WFRec] Dashboard save failed:', e));
+  saveToDashboard(eventsSnapshot, screenshotsSnapshot, checkpointsSnapshot).catch(e => console.warn('[WFRec] Dashboard save failed:', e));
 }
 
 /**
@@ -383,15 +900,20 @@ async function handleRestartRecording(sendResponse) {
   }
 
   state.events = [];
+  state.recordingCheckpoints = [];
   state.screenshots = {};
   state.screenshotCount = 0;
+  state.recordingSessionId = createRecordingSessionId();
   state.consoleLogs = {};
   state.networkCalls = {};
+  state.networkClearCutoffs = {};
   state.dialogState = { consoleOpen: false, networkOpen: false };
   broadcastDialogStateToActiveTab();
 
+  await setRecordingActive();
   await persistEvents();
-  chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  await chrome.storage.session.set({ wfNetworkCalls: {} }).catch(() => {});
+  await chrome.storage.session.set({ wfNetworkClearCutoffs: {} }).catch(() => {});
 
   sendResponse({ ok: true });
 }
@@ -412,10 +934,12 @@ async function handleDiscardRecording(sendResponse) {
 
   state.mode = "idle";
   state.workflowName = "";
+  state.recordingSessionId = null;
 
   await setRecordingIdle();
   await deactivateRecorderOnAllTabs();
   chrome.storage.session.remove("wfNetworkCalls").catch(() => {});
+  chrome.storage.session.remove("wfNetworkClearCutoffs").catch(() => {});
 
   sendResponse({ ok: true });
 }
@@ -473,14 +997,13 @@ async function handleAddCheckpoint(label, sendResponse) {
 
     const checkpointEvent = {
       type: "checkpoint",
+      checkpointId: createRecordingSessionId(),
       label: label || `Checkpoint ${index + 1}`,
       screenshotIndex: index,
       url: tab.url,
       timestamp: Date.now(),
     };
-    state.events.push(checkpointEvent);
-
-    persistEvents();
+    await appendCheckpointToRecordingState(checkpointEvent);
 
     broadcastToPopup({
       type: "CHECKPOINT_ADDED",
@@ -507,7 +1030,7 @@ async function handleAddCheckpoint(label, sendResponse) {
  * @param {string} label - Human-readable name shown in the UI.
  * @param {Function} sendResponse
  */
-async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
+async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefore, contextAfter, checkpointId, checkpointTimestamp, sendResponse) {
   await readyPromise;
   if (state.mode !== "recording") {
     sendResponse({ error: "Not recording" });
@@ -520,19 +1043,32 @@ async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
     return;
   }
 
-  const autoLabel = label || `Console: ${logMessage.slice(0, 40)}`;
-  const checkpointEvent = {
-    type: "console_checkpoint",
-    label: autoLabel,
-    logMessage,
-    url: tab.url,
-    timestamp: Date.now(),
-  };
-  state.events.push(checkpointEvent);
-  persistEvents();
+  try {
+    const selectedEntry = typeof logEntryOrMessage === "string"
+      ? { message: logEntryOrMessage, level: "log", timestamp: Date.now(), url: tab.url }
+      : (logEntryOrMessage || {});
+    const logMessage = selectedEntry.message || "";
+    const autoLabel = label || `Console: ${logMessage.slice(0, 40)}`;
+    const checkpointEvent = {
+      type: "console_checkpoint",
+      checkpointId: checkpointId || createRecordingSessionId(),
+      label: autoLabel,
+      logMessage,
+      logLevel: selectedEntry.level || "log",
+      logTimestamp: selectedEntry.timestamp || Date.now(),
+      logUrl: selectedEntry.url || tab.url,
+      logContextBefore: Array.isArray(contextBefore) ? contextBefore.slice(-1) : [],
+      logContextAfter: Array.isArray(contextAfter) ? contextAfter.slice(0, 1) : [],
+      url: tab.url,
+      timestamp: checkpointTimestamp || Date.now(),
+    };
+    await appendCheckpointToRecordingState(checkpointEvent);
 
-  broadcastToPopup({ type: "CONSOLE_CHECKPOINT_ADDED", label: autoLabel });
-  sendResponse({ ok: true, label: autoLabel });
+    broadcastToPopup({ type: "CONSOLE_CHECKPOINT_ADDED", label: autoLabel });
+    sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
+  } catch (err) {
+    sendResponse({ error: err?.message || "Failed to add console checkpoint" });
+  }
 }
 
 /**
@@ -549,7 +1085,7 @@ async function handleAddConsoleCheckpoint(logMessage, label, sendResponse) {
  * @param {string} label - Human-readable name.
  * @param {Function} sendResponse
  */
-async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, sendResponse) {
+async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, checkpointId, checkpointTimestamp, sendResponse) {
   await readyPromise;
   if (state.mode !== "recording") {
     sendResponse({ error: "Not recording" });
@@ -562,26 +1098,30 @@ async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStat
     return;
   }
 
-  const autoLabel = label || `Network: ${networkMethod} ${networkUrl.slice(0, 35)}`;
-  const checkpointEvent = {
-    type: "network_checkpoint",
-    label: autoLabel,
-    networkUrl,
-    networkMethod,
-    networkStatus,
-    networkStatusText: networkStatusText || null,
-    networkRequestHeaders: networkRequestHeaders || null,
-    networkResponseHeaders: networkResponseHeaders || null,
-    networkRequestBody: networkRequestBody || null,
-    networkResponseBody: networkResponseBody || null,
-    url: tab.url,
-    timestamp: Date.now(),
-  };
-  state.events.push(checkpointEvent);
-  persistEvents();
+  try {
+    const autoLabel = label || `Network: ${networkMethod} ${(networkUrl || "").slice(0, 35)}`;
+    const checkpointEvent = {
+      type: "network_checkpoint",
+      checkpointId: checkpointId || createRecordingSessionId(),
+      label: autoLabel,
+      networkUrl,
+      networkMethod,
+      networkStatus,
+      networkStatusText: networkStatusText || null,
+      networkRequestHeaders: networkRequestHeaders || null,
+      networkResponseHeaders: networkResponseHeaders || null,
+      networkRequestBody: networkRequestBody || null,
+      networkResponseBody: networkResponseBody || null,
+      url: tab.url,
+      timestamp: checkpointTimestamp || Date.now(),
+    };
+    await appendCheckpointToRecordingState(checkpointEvent);
 
-  broadcastToPopup({ type: "NETWORK_CHECKPOINT_ADDED", label: autoLabel });
-  sendResponse({ ok: true, label: autoLabel });
+    broadcastToPopup({ type: "NETWORK_CHECKPOINT_ADDED", label: autoLabel });
+    sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
+  } catch (err) {
+    sendResponse({ error: err?.message || "Failed to add network checkpoint" });
+  }
 }
 
 // ─── Activate / deactivate recorder on all open tabs ─────────────────────────
@@ -714,24 +1254,22 @@ async function activateTabRecorder(tabId, action) {
 // ─── Network capture via webRequest ──────────────────────────────────────────
 
 /**
- * Stores a captured network call and notifies the active tab's UI overlay.
+ * Stores a captured network call in the worker cache and streams it to the network dialog.
  *
  * Strategy:
  * Called from both onCompleted and onErrorOccurred webRequest listeners. Waits
  * for readyPromise so state.mode is accurate even after a SW restart. Persists to
- * session storage on every write so data survives SW dormancy. Sends NETWORK_CALL_LIVE
- * to the tab so the Network Calls panel updates in real-time when it is open.
+ * session storage on every write so data survives SW dormancy, and emits
+ * NETWORK_CALL_LIVE updates for the network dialog.
  */
 function recordNetworkCall(tabId, call) {
   readyPromise.then(() => {
     if (state.mode !== "recording") return;
     if (!tabId || tabId < 0) return;
-    state.networkCalls[tabId] = state.networkCalls[tabId] || [];
-    if (state.networkCalls[tabId].length < 500) {
-      state.networkCalls[tabId].push(call);
-      chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
-    }
-    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call }).catch(() => {});
+    if (isStaleNetworkEntry(tabId, call)) return;
+    const mergedCall = upsertRecordedNetworkCall(tabId, call);
+    chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
   });
 }
 
@@ -1050,9 +1588,42 @@ async function runSinglePlayback() {
  * the `DASHBOARD_URL` via POST. It records the newly minted remote ID on the local workflow instance 
  * to correlate future playback runs to this master template.
  */
-async function saveToDashboard(events, screenshots) {
+async function saveToDashboard(events, screenshots, checkpointsOverride = null) {
   const name = state.workflowName || ('recorded-workflow-' + new Date().toISOString().slice(0, 16).replace('T', ' '));
   const screenshotMap = {};
+  const checkpointSource = Array.isArray(checkpointsOverride) && checkpointsOverride.length > 0
+    ? checkpointsOverride
+    : (Array.isArray(events)
+      ? events
+        .filter((event) =>
+          event?.type === "checkpoint" ||
+          event?.type === "console_checkpoint" ||
+          event?.type === "network_checkpoint"
+        )
+      : []);
+  const checkpoints = checkpointSource.map((event, index) => ({
+          index,
+          checkpointId: event.checkpointId ?? null,
+          type: event.type,
+          label: event.label || null,
+          url: event.url || null,
+          timestamp: event.timestamp || null,
+          screenshotIndex: event.screenshotIndex ?? null,
+          logMessage: event.logMessage ?? null,
+          logLevel: event.logLevel ?? null,
+          logTimestamp: event.logTimestamp ?? null,
+          logUrl: event.logUrl ?? null,
+          logContextBefore: event.logContextBefore ?? [],
+          logContextAfter: event.logContextAfter ?? [],
+          networkUrl: event.networkUrl ?? null,
+          networkMethod: event.networkMethod ?? null,
+          networkStatus: event.networkStatus ?? null,
+          networkStatusText: event.networkStatusText ?? null,
+          networkRequestHeaders: event.networkRequestHeaders ?? null,
+          networkResponseHeaders: event.networkResponseHeaders ?? null,
+          networkRequestBody: event.networkRequestBody ?? null,
+          networkResponseBody: event.networkResponseBody ?? null,
+        }));
   if (screenshots) {
     for (const [k, v] of Object.entries(screenshots)) {
       screenshotMap[k] = v;
@@ -1061,7 +1632,7 @@ async function saveToDashboard(events, screenshots) {
   const res = await fetch(`${DASHBOARD_URL}/api/workflows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, events, screenshots: screenshotMap }),
+    body: JSON.stringify({ name, events, screenshots: screenshotMap, checkpoints }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
@@ -1218,10 +1789,19 @@ async function dispatchPlaybackEvent(event, results, meta) {
           target: { tabId: cpTab.id },
           world: "MAIN",
           func: (targetMsg, timeoutMs) => {
+            function snapshotForIndex(logs, idx) {
+              if (idx < 0 || idx >= logs.length) return null;
+              return {
+                entry: logs[idx] || null,
+                before: idx > 0 ? [logs[idx - 1]] : [],
+                after: idx < logs.length - 1 ? [logs[idx + 1]] : [],
+              };
+            }
+
             // 1. Retroactive check — did this log appear before this checkpoint step?
             const logs = window.__wfPlayLogs || [];
-            const match = logs.find(e => e.message && e.message.includes(targetMsg));
-            if (match) return match;
+            const matchIndex = logs.findIndex(e => e.message && e.message.includes(targetMsg));
+            if (matchIndex >= 0) return snapshotForIndex(logs, matchIndex);
 
             // 2. Live watcher — wait for a future matching event (short window).
             return new Promise((resolve) => {
@@ -1233,7 +1813,13 @@ async function dispatchPlaybackEvent(event, results, meta) {
                 if (ev.detail && ev.detail.message && ev.detail.message.includes(targetMsg)) {
                   clearTimeout(timer);
                   window.removeEventListener("__wf_log_capture__", handler);
-                  resolve(ev.detail);
+                  const nextLogs = window.__wfPlayLogs || [];
+                  const nextIndex = nextLogs.findIndex((entry) =>
+                    entry &&
+                    entry.timestamp === ev.detail.timestamp &&
+                    entry.message === ev.detail.message
+                  );
+                  resolve(snapshotForIndex(nextLogs, nextIndex >= 0 ? nextIndex : nextLogs.length - 1));
                 }
               }
               window.addEventListener("__wf_log_capture__", handler);
@@ -1252,27 +1838,29 @@ async function dispatchPlaybackEvent(event, results, meta) {
         console.warn("[WFPlay] console_checkpoint error:", err);
       }
 
-      // Capture screenshot as evidence regardless of match result.
-      try {
-        const dataUrl = await chrome.tabs.captureVisibleTab(cpTab.windowId, { format: "png" });
-        const idx = state.screenshotCount++;
-        results.checkpoints[idx] = {
-          label: event.label,
-          checkpointType: "console",
-          dataUrl,
-          capturedData: JSON.stringify({
-            matched: !!matchedEntry,
-            expectedMessage: event.logMessage ?? null,
-            capturedMessage: matchedEntry?.message ?? null,
-            capturedLevel: matchedEntry?.level ?? null,
-            capturedUrl: matchedEntry?.url ?? null,
-            capturedTimestamp: matchedEntry?.timestamp ?? null,
-          }),
-        };
-        state.screenshots[idx] = dataUrl;
-        broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
-        chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-      } catch (_) {}
+      const idx = state.screenshotCount++;
+      results.checkpoints[idx] = {
+        label: event.label,
+        checkpointType: "console",
+        dataUrl: null,
+        capturedData: JSON.stringify({
+          matched: !!matchedEntry?.entry,
+          expectedMessage: event.logMessage ?? null,
+          expectedLevel: event.logLevel ?? null,
+          expectedUrl: event.logUrl ?? null,
+          expectedTimestamp: event.logTimestamp ?? null,
+          expectedContextBefore: event.logContextBefore ?? [],
+          expectedContextAfter: event.logContextAfter ?? [],
+          capturedMessage: matchedEntry?.entry?.message ?? null,
+          capturedLevel: matchedEntry?.entry?.level ?? null,
+          capturedUrl: matchedEntry?.entry?.url ?? null,
+          capturedTimestamp: matchedEntry?.entry?.timestamp ?? null,
+          capturedContextBefore: matchedEntry?.before ?? [],
+          capturedContextAfter: matchedEntry?.after ?? [],
+        }),
+      };
+      broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, checkpointType: "console" });
+      chrome.tabs.sendMessage(cpTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
 
       return { ok: true };
     }
@@ -1297,12 +1885,45 @@ async function dispatchPlaybackEvent(event, results, meta) {
           target: { tabId: netTab.id },
           world: "MAIN",
           func: (targetUrl, targetMethod, timeoutMs) => {
+            function normalizeUrl(url) {
+              try {
+                const parsed = new URL(url, window.location.href);
+                const pathname = parsed.pathname.length > 1
+                  ? parsed.pathname.replace(/\/+$/, "")
+                  : parsed.pathname;
+                return {
+                  href: parsed.href,
+                  origin: parsed.origin,
+                  pathname,
+                  search: parsed.search,
+                };
+              } catch (_) {
+                const text = String(url || "");
+                return {
+                  href: text,
+                  origin: "",
+                  pathname: text,
+                  search: "",
+                };
+              }
+            }
+
+            function isNetworkMatch(candidate, expectedUrl, expectedMethod) {
+              if (!candidate || !candidate.url) return false;
+              if (expectedMethod && candidate.method !== expectedMethod) return false;
+
+              const expected = normalizeUrl(expectedUrl);
+              const actual = normalizeUrl(candidate.url);
+
+              if (expected.origin && actual.origin && expected.origin !== actual.origin) return false;
+              if (expected.pathname !== actual.pathname) return false;
+              if (expected.search && expected.search !== actual.search) return false;
+              return true;
+            }
+
             // 1. Retroactive check
             const calls = window.__wfPlayNet || [];
-            const past = calls.find(c =>
-              c.url && c.url.includes(targetUrl) &&
-              (!targetMethod || c.method === targetMethod)
-            );
+            const past = calls.find((c) => isNetworkMatch(c, targetUrl, targetMethod));
             if (past) return past;
 
             // 2. Live watcher
@@ -1313,8 +1934,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
               }, timeoutMs);
               function handler(ev) {
                 const c = ev.detail;
-                if (c && c.url && c.url.includes(targetUrl) &&
-                    (!targetMethod || c.method === targetMethod)) {
+                if (isNetworkMatch(c, targetUrl, targetMethod)) {
                   clearTimeout(timer);
                   window.removeEventListener("__wf_net_capture__", handler);
                   resolve(c);
@@ -1326,6 +1946,74 @@ async function dispatchPlaybackEvent(event, results, meta) {
           args: [event.networkUrl, event.networkMethod, Math.min(state.playBufferMs || 8000, 5000)],
         });
         matchedCall = found?.[0]?.result || null;
+        if (matchedCall) {
+          const enriched = await chrome.scripting.executeScript({
+          target: { tabId: netTab.id },
+          world: "MAIN",
+          func: async (targetUrl, targetMethod, targetTimestamp, settleMs) => {
+              function normalizeUrl(url) {
+                try {
+                  const parsed = new URL(url, window.location.href);
+                  const pathname = parsed.pathname.length > 1
+                    ? parsed.pathname.replace(/\/+$/, "")
+                    : parsed.pathname;
+                  return {
+                    origin: parsed.origin,
+                    pathname,
+                    search: parsed.search,
+                  };
+                } catch (_) {
+                  const text = String(url || "");
+                  return {
+                    origin: "",
+                    pathname: text,
+                    search: "",
+                  };
+                }
+              }
+
+              function isNetworkMatch(candidate, expectedUrl, expectedMethod) {
+                if (!candidate || !candidate.url) return false;
+                if (expectedMethod && candidate.method !== expectedMethod) return false;
+
+                const expected = normalizeUrl(expectedUrl);
+                const actual = normalizeUrl(candidate.url);
+
+                if (expected.origin && actual.origin && expected.origin !== actual.origin) return false;
+                if (expected.pathname !== actual.pathname) return false;
+                if (expected.search && expected.search !== actual.search) return false;
+                return true;
+              }
+
+              function findMatch() {
+                const calls = window.__wfPlayNet || [];
+                for (let i = calls.length - 1; i >= 0; i--) {
+                  const call = calls[i];
+                  if (!isNetworkMatch(call, targetUrl, targetMethod)) continue;
+                  if (targetTimestamp && call.timestamp !== targetTimestamp) continue;
+                  return call;
+                }
+                return null;
+              }
+
+              const startedAt = Date.now();
+              let latest = findMatch();
+              while (Date.now() - startedAt < settleMs) {
+                if (latest && (latest.responseBody != null || latest.requestBody != null)) break;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                latest = findMatch() || latest;
+              }
+              return latest;
+            },
+            args: [
+              event.networkUrl,
+              event.networkMethod,
+              matchedCall.timestamp || null,
+              400,
+            ],
+          });
+          matchedCall = enriched?.[0]?.result || matchedCall;
+        }
         if (!matchedCall) {
           console.warn("[WFPlay] network_checkpoint not matched:", event.networkMethod, event.networkUrl);
         }
@@ -1333,34 +2021,34 @@ async function dispatchPlaybackEvent(event, results, meta) {
         console.warn("[WFPlay] network_checkpoint error:", err);
       }
 
-      // Capture screenshot as evidence.
-      try {
-        const dataUrl = await chrome.tabs.captureVisibleTab(netTab.windowId, { format: "png" });
-        const idx = state.screenshotCount++;
-        results.checkpoints[idx] = {
-          label: event.label,
-          checkpointType: "network",
-          dataUrl,
-          capturedData: JSON.stringify({
-            matched: !!matchedCall,
-            expectedUrl: event.networkUrl ?? null,
-            expectedMethod: event.networkMethod ?? null,
-            expectedStatus: event.networkStatus ?? null,
-            capturedUrl: matchedCall?.url ?? null,
-            capturedMethod: matchedCall?.method ?? null,
-            capturedStatus: matchedCall?.status ?? null,
-            capturedStatusText: matchedCall?.statusText ?? null,
-            requestHeaders: matchedCall?.requestHeaders ?? null,
-            responseHeaders: matchedCall?.responseHeaders ?? null,
-            requestBody: matchedCall?.requestBody ?? null,
-            responseBody: matchedCall?.responseBody ?? null,
-            capturedTimestamp: matchedCall?.timestamp ?? null,
-          }),
-        };
-        state.screenshots[idx] = dataUrl;
-        broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, screenshotDataUrl: dataUrl });
-        chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
-      } catch (_) {}
+      const idx = state.screenshotCount++;
+      results.checkpoints[idx] = {
+        label: event.label,
+        checkpointType: "network",
+        dataUrl: null,
+        capturedData: JSON.stringify({
+          matched: !!matchedCall,
+          expectedUrl: event.networkUrl ?? null,
+          expectedMethod: event.networkMethod ?? null,
+          expectedStatus: event.networkStatus ?? null,
+          expectedStatusText: event.networkStatusText ?? null,
+          expectedRequestHeaders: event.networkRequestHeaders ?? null,
+          expectedResponseHeaders: event.networkResponseHeaders ?? null,
+          expectedRequestBody: event.networkRequestBody ?? null,
+          expectedResponseBody: event.networkResponseBody ?? null,
+          capturedUrl: matchedCall?.url ?? null,
+          capturedMethod: matchedCall?.method ?? null,
+          capturedStatus: matchedCall?.status ?? null,
+          capturedStatusText: matchedCall?.statusText ?? null,
+          requestHeaders: matchedCall?.requestHeaders ?? null,
+          responseHeaders: matchedCall?.responseHeaders ?? null,
+          requestBody: matchedCall?.requestBody ?? null,
+          responseBody: matchedCall?.responseBody ?? null,
+          capturedTimestamp: matchedCall?.timestamp ?? null,
+        }),
+      };
+      broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, checkpointType: "network" });
+      chrome.tabs.sendMessage(netTab.id, { type: "PLAYBACK_CHECKPOINT_FLASH", label: event.label }).catch(() => {});
 
       return { ok: true };
     }
@@ -1501,10 +2189,13 @@ async function handleExportWorkflow(sendResponse) {
  */
 function resetState() {
   state.events = [];
+  state.recordingCheckpoints = [];
   state.screenshots = {};
   state.screenshotCount = 0;
-  state.consoleLogs = [];
-  state.networkCalls = [];
+  state.recordingSessionId = null;
+  state.consoleLogs = {};
+  state.networkCalls = {};
+  state.networkClearCutoffs = {};
   state.playbackIndex = 0;
   state.playbackTabId = null;
   state.workflowToPlay = null;
