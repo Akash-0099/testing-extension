@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useState, useEffect } from 'react'
 
 interface Workflow {
   id: string
@@ -19,6 +20,12 @@ interface Props {
 /** Logged-in home: workflow list, stats, and sidebar navigation. */
 export default function HomeClient({ workflows, stats, userEmail }: Props) {
   const router = useRouter()
+  const [mounted, setMounted] = useState(false)
+  const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   /** Ends the session via the logout API and sends the user to `/login`. */
   async function handleLogout() {
@@ -34,6 +41,39 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
     })
   }
 
+  /** Fetches full workflow data and downloads as JSON (debounced). */
+  async function handleExportWorkflow(e: React.MouseEvent, id: string, name: string) {
+    e.stopPropagation() // Prevent card click navigation
+    if (exportingIds.has(id)) return // Debounce duplicate clicks
+
+    setExportingIds(prev => new Set(prev).add(id))
+    try {
+      const res = await fetch(`/api/workflows/${id}`)
+      if (!res.ok) throw new Error('Failed to fetch workflow')
+      const workflow = await res.json()
+      
+      const data = JSON.stringify(workflow, null, 2)
+      const blob = new Blob([data], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${name.replace(/\s+/g, '-').toLowerCase() || 'workflow'}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error(err)
+      alert('Could not export workflow data.')
+    } finally {
+      setExportingIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -47,11 +87,16 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
         </div>
 
         <Link href="/" className="nav-item active">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="10" />
+          </svg>
           Workflows
         </Link>
         <Link href="/settings" className="nav-item">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
           Settings
         </Link>
 
@@ -63,12 +108,14 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
             <span style={{ color: 'var(--text)', fontWeight: 600 }}>{userEmail}</span>
           </div>
           <button id="logout-btn" className="btn btn-danger" style={{ width: '100%', justifyContent: 'center' }} onClick={handleLogout}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
             Sign Out
           </button>
         </div>
       </nav>
 
-      {/* Main */}
       <main className="main">
         <div className="page-header">
           <div className="page-title">Workflows</div>
@@ -95,7 +142,9 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
           {/* Workflow list */}
           {workflows.length === 0 ? (
             <div className="empty-state">
-              <div className="empty-icon" aria-hidden="true" />
+              <svg className="empty-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 16, opacity: 0.2 }}>
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
               <div className="empty-title">No workflows yet</div>
               <div className="empty-desc">
                 Record a workflow in the Chrome extension and it will appear here automatically.
@@ -115,7 +164,65 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
                     <span className="badge badge-purple">{w._count.screenshots} checkpoints</span>
                     <span className="badge badge-green">{w._count.runs} runs</span>
                   </div>
-                  <div className="workflow-card-date">Recorded {fmtDate(w.recordedAt)}</div>
+                  <div className="workflow-card-date" suppressHydrationWarning>
+                    {mounted ? `Recorded ${fmtDate(w.recordedAt)}` : 'Loading date...'}
+                  </div>
+                  
+                  {/* Quick Export Button */}
+                  {mounted && (
+                    <button
+                      className="btn btn-icon-only"
+                      onClick={(e) => handleExportWorkflow(e, w.id, w.name)}
+                      title="Export JSON"
+                      disabled={exportingIds.has(w.id)}
+                      style={{
+                        position: 'absolute',
+                        bottom: 12,
+                        right: 12,
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
+                        background: 'rgba(255,255,255,0.05)',
+                        border: '1px solid var(--border)',
+                        color: exportingIds.has(w.id) ? 'var(--accent)' : 'var(--text-muted)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.2s',
+                        cursor: exportingIds.has(w.id) ? 'not-allowed' : 'pointer',
+                        padding: 0
+                      }}
+                      onMouseEnter={(e) => {
+                        if (exportingIds.has(w.id)) return
+                        e.currentTarget.style.background = 'rgba(124,58,237,0.1)'
+                        e.currentTarget.style.color = 'var(--accent-light)'
+                        e.currentTarget.style.borderColor = 'var(--accent)'
+                        e.currentTarget.style.transform = 'scale(1.05)'
+                      }}
+                      onMouseLeave={(e) => {
+                        if (exportingIds.has(w.id)) return
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+                        e.currentTarget.style.color = 'var(--text-muted)'
+                        e.currentTarget.style.borderColor = 'var(--border)'
+                        e.currentTarget.style.transform = 'scale(1)'
+                      }}
+                    >
+                      <svg 
+                        width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                        style={{ animation: exportingIds.has(w.id) ? 'spin 1s linear infinite' : 'none' }}
+                      >
+                        {exportingIds.has(w.id) ? (
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        ) : (
+                          <>
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="7 10 12 15 17 10" />
+                            <line x1="12" y1="15" x2="12" y2="3" />
+                          </>
+                        )}
+                      </svg>
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

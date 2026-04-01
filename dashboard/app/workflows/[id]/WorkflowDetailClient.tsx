@@ -64,6 +64,20 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
     ? (workflow.events as any[]).filter(isCheckpointEvent)
     : []
 
+  /** Downloads the workflow data as a prettified JSON file. */
+  function handleExportJson() {
+    const data = JSON.stringify(workflow, null, 2)
+    const blob = new Blob([data], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${workflow.name.replace(/\s+/g, '-').toLowerCase() || 'workflow'}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   // Map screenshot-checkpoint events to their captured thumbnail (screenshots are keyed by
   // sequential index among screenshot-only checkpoints, not the overall event index).
   let ssIdx = 0
@@ -90,15 +104,22 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           </div>
         </div>
         <Link href="/" className="nav-item">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
           All Workflows
         </Link>
         <Link href="/settings" className="nav-item">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
           Settings
         </Link>
         <div className="nav-item active">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          </svg>
           Detail View
         </div>
       </nav>
@@ -109,7 +130,19 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           <div className="breadcrumb" onClick={() => router.push('/')}>
             ← Back to all workflows
           </div>
-          <div className="page-title">{workflow.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+            <div className="page-title">{workflow.name}</div>
+            <button
+              onClick={handleExportJson}
+              className="btn btn-primary"
+              style={{ padding: '8px 16px', fontSize: 13, gap: 8 }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              Export JSON
+            </button>
+          </div>
           <div className="page-subtitle">Recorded {fmtDate(workflow.recordedAt)} · {eventCount} events</div>
         </div>
 
@@ -138,7 +171,11 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           <div className="section-title">Recording Checkpoints</div>
           {workflow.screenshots.length === 0 ? (
             <div className="empty-state" style={{ padding: '32px 20px' }}>
-              <div className="empty-icon" aria-hidden="true" />
+              <svg className="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 12, opacity: 0.2 }}>
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <polyline points="21 15 16 10 5 21" />
+              </svg>
               <div className="empty-title">No checkpoints yet</div>
               <div className="empty-desc">Take screenshot checkpoints while recording to see them here.</div>
             </div>
@@ -164,7 +201,10 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           <div className="section-title" style={{ marginBottom: 14 }}>Checkpoint Timeline</div>
           {checkpointEvents.length === 0 ? (
             <div className="empty-state" style={{ padding: '24px 20px', marginBottom: 24 }}>
-              <div className="empty-icon" aria-hidden="true" />
+              <svg className="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 12, opacity: 0.2 }}>
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
               <div className="empty-title">No checkpoints recorded</div>
               <div className="empty-desc">Add screenshot, console, or network checkpoints while recording to see them here.</div>
             </div>
@@ -296,7 +336,9 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
           <div className="section-title" style={{ marginBottom: 14 }}>Playback Runs</div>
           {workflow.runs.length === 0 ? (
             <div className="empty-state" style={{ padding: '32px 20px' }}>
-              <div className="empty-icon" aria-hidden="true" />
+              <svg className="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 12, opacity: 0.2 }}>
+                <polygon points="5 3 19 12 5 21 5 3" />
+              </svg>
               <div className="empty-title">No playback runs yet</div>
               <div className="empty-desc">Play back this workflow in the extension to capture checkpoint screenshots for comparison.</div>
             </div>

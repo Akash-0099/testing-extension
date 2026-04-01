@@ -37,6 +37,8 @@ const authTabSignup     = document.getElementById("authTabSignup");
 const authEmail         = document.getElementById("authEmail");
 const authPassword      = document.getElementById("authPassword");
 const authConfirmPassword = document.getElementById("authConfirmPassword");
+const btnTogglePassword = document.getElementById("btnTogglePassword");
+const btnToggleConfirmPassword = document.getElementById("btnToggleConfirmPassword");
 const btnAuthSubmit     = document.getElementById("btnAuthSubmit");
 const btnExtensionLogout = document.getElementById("btnExtensionLogout");
 const authUserEmail     = document.getElementById("authUserEmail");
@@ -280,7 +282,8 @@ function setAuthMode(mode) {
   authMode = mode;
   authTabSignin.classList.toggle('active', mode === 'signin');
   authTabSignup.classList.toggle('active', mode === 'signup');
-  authConfirmPassword.classList.toggle('hidden', mode !== 'signup');
+  const confirmWrap = document.getElementById('authConfirmPasswordWrap');
+  if (confirmWrap) confirmWrap.classList.toggle('hidden', mode !== 'signup');
   authPassword.autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
   authConfirmPassword.autocomplete = mode === 'signup' ? 'new-password' : 'off';
   btnAuthSubmit.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
@@ -460,7 +463,12 @@ async function submitExtensionAuth() {
     authPassword.value = '';
     authConfirmPassword.value = '';
     resetDashboardWorkflowState();
-    setAuthStatus(authMode === 'signup' ? 'Account created.' : 'Signed in.');
+    setAuthStatus(authMode === 'signup' ? 'Account created.' : 'Signed in.', 'success');
+    setTimeout(() => {
+      if (authStatus.textContent === 'Account created.' || authStatus.textContent === 'Signed in.') {
+        setAuthStatus('');
+      }
+    }, 2500);
     showToast(authMode === 'signup' ? 'Account created.' : 'Signed in.', 'success');
 
     if (tabFromDashboard.classList.contains('active')) {
@@ -482,7 +490,12 @@ async function logoutExtensionAuth() {
     // Best effort only. The extension primarily relies on bearer tokens.
   }
 
-  await clearDashboardAuth('Signed out.');
+  await clearDashboardAuth('Signed out.', 'success');
+  setTimeout(() => {
+    if (authStatus.textContent === 'Signed out.') {
+      setAuthStatus('');
+    }
+  }, 2500);
   authPassword.value = '';
   authConfirmPassword.value = '';
   showToast('Signed out.', 'success');
@@ -493,6 +506,23 @@ authTabSignin.addEventListener('click', () => setAuthMode('signin'));
 authTabSignup.addEventListener('click', () => setAuthMode('signup'));
 btnAuthSubmit.addEventListener('click', submitExtensionAuth);
 btnExtensionLogout.addEventListener('click', logoutExtensionAuth);
+
+// Password visibility toggles
+const SVG_EYE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+const SVG_EYE_OFF = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+
+function setupPasswordToggle(input, btn) {
+  if (!input || !btn) return;
+  btn.addEventListener('click', () => {
+    const isPass = input.type === 'password';
+    input.type = isPass ? 'text' : 'password';
+    btn.innerHTML = isPass ? SVG_EYE_OFF : SVG_EYE;
+    btn.title = isPass ? 'Hide password' : 'Show password';
+  });
+}
+
+setupPasswordToggle(authPassword, btnTogglePassword);
+setupPasswordToggle(authConfirmPassword, btnToggleConfirmPassword);
 
 // Allow submission via Enter key
 [authEmail, authPassword, authConfirmPassword].forEach(input => {

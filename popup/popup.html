@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Workflow Recorder</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
+
 <body>
   <!-- Header -->
   <header class="header">
@@ -27,13 +29,7 @@
       <div class="card">
         <div class="card-label">New Recording</div>
         <div class="row-gap">
-          <input
-            type="text"
-            id="workflowName"
-            class="input"
-            placeholder="Workflow name (optional)"
-            maxlength="60"
-          />
+          <input type="text" id="workflowName" class="input" placeholder="Workflow name (optional)" maxlength="60" />
           <button class="btn btn-record" id="btnRecord">
             <span class="btn-icon" aria-hidden="true"></span> Start Recording
           </button>
@@ -77,9 +73,11 @@
         </div>
 
         <!-- Play Settings -->
-        <div class="settings-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; margin-top: 12px; padding: 0 4px;">
+        <div class="settings-row"
+          style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; margin-top: 12px; padding: 0 4px;">
           <label for="playBufferSeconds" style="font-size:12px; color:#9ca3af;">DOM Load Buffer (seconds):</label>
-          <input type="number" id="playBufferSeconds" class="input" style="width:60px; text-align:right; padding:4px 8px;" min="0" max="60" value="8" />
+          <input type="number" id="playBufferSeconds" class="input"
+            style="width:60px; text-align:right; padding:4px 8px;" min="0" max="60" value="8" />
         </div>
 
         <button class="btn btn-play" id="btnPlay" disabled>
@@ -100,27 +98,29 @@
           <button class="load-tab" id="authTabSignup" type="button">Sign Up</button>
         </div>
 
-        <input
-          type="email"
-          id="authEmail"
-          class="input"
-          placeholder="Email address"
-          autocomplete="username"
-        />
-        <input
-          type="password"
-          id="authPassword"
-          class="input"
-          placeholder="Password"
-          autocomplete="current-password"
-        />
-        <input
-          type="password"
-          id="authConfirmPassword"
-          class="input hidden"
-          placeholder="Confirm password"
-          autocomplete="new-password"
-        />
+        <input type="email" id="authEmail" class="input" placeholder="Email address" autocomplete="username" />
+        <div class="password-wrap">
+          <input type="password" id="authPassword" class="input" placeholder="Password"
+            autocomplete="current-password" />
+          <button type="button" class="password-toggle" id="btnTogglePassword" title="Show password">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+        <div class="password-wrap hidden" id="authConfirmPasswordWrap">
+          <input type="password" id="authConfirmPassword" class="input" placeholder="Confirm password"
+            autocomplete="new-password" />
+          <button type="button" class="password-toggle" id="btnToggleConfirmPassword" title="Show password">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
         <button class="btn btn-auth" id="btnAuthSubmit" type="button">Sign In</button>
       </div>
 
@@ -171,10 +171,7 @@
       <div class="card-label">Add Checkpoint</div>
       <div class="row-gap">
         <label class="setting-check" for="promptScreenshotLabelToggle">
-          <input
-            type="checkbox"
-            id="promptScreenshotLabelToggle"
-          />
+          <input type="checkbox" id="promptScreenshotLabelToggle" />
           <span>Prompt for screenshot labels</span>
         </label>
         <button class="btn btn-checkpoint" id="btnCheckpoint">
@@ -241,4 +238,5 @@
 
   <script src="popup.js" type="module"></script>
 </body>
+
 </html>
