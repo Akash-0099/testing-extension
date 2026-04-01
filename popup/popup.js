@@ -494,6 +494,15 @@ authTabSignup.addEventListener('click', () => setAuthMode('signup'));
 btnAuthSubmit.addEventListener('click', submitExtensionAuth);
 btnExtensionLogout.addEventListener('click', logoutExtensionAuth);
 
+// Allow submission via Enter key
+[authEmail, authPassword, authConfirmPassword].forEach(input => {
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      submitExtensionAuth();
+    }
+  });
+});
+
 // ─── Recording ────────────────────────────────────────────────────────────────
 
 btnRecord.addEventListener("click", async () => {
