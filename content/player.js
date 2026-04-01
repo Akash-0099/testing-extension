@@ -242,7 +242,7 @@
       gap: 8px;
       animation: __wf_flash__ 1.2s ease-out forwards;
     `;
-    badge.innerHTML = `<span style="color:#facc15;font-size:16px;font-weight:700;">CP</span> ${label || "Checkpoint"}`;
+    badge.innerHTML = `<span style="color:#ef4345;font-size:16px;font-weight:700;">CP</span> ${label || "Checkpoint"}`;
     document.body.appendChild(badge);
     setTimeout(() => badge.remove(), 1200);
   }

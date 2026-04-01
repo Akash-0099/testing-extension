@@ -556,12 +556,12 @@
 
   // Inline SVG icons — stroke-based, 18×18 viewBox, no fill.
   const SVG = {
-    screenshot: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="6" width="13" height="10" rx="1.2"/><path d="M5.5 6l1-2h3l1 2"/><circle cx="8" cy="11.5" r="2.2"/></svg>`,
-    network:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><ellipse cx="9" cy="9" rx="3" ry="7"/><line x1="2" y1="9" x2="16" y2="9"/></svg>`,
-    console:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6.5 7.5,9 3,11.5"/><line x1="9" y1="12" x2="15" y2="12"/></svg>`,
-    save:       `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,9.5 7,13.5 15,4.5"/></svg>`,
-    discard:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round"><line x1="4.5" y1="4.5" x2="13.5" y2="13.5"/><line x1="13.5" y1="4.5" x2="4.5" y2="13.5"/></svg>`,
-    restart:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#ffd700" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 9a3.5 3.5 0 1 0 .7-2.1"/><polyline points="3,5.5 6,6.8 5.5,10"/></svg>`,
+    screenshot: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="6" width="13" height="10" rx="1.2"/><path d="M5.5 6l1-2h3l1 2"/><circle cx="8" cy="11.5" r="2.2"/></svg>`,
+    network:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><ellipse cx="9" cy="9" rx="3" ry="7"/><line x1="2" y1="9" x2="16" y2="9"/></svg>`,
+    console:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6.5 7.5,9 3,11.5"/><line x1="9" y1="12" x2="15" y2="12"/></svg>`,
+    save:       `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,9.5 7,13.5 15,4.5"/></svg>`,
+    discard:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="4.5" y1="4.5" x2="13.5" y2="13.5"/><line x1="13.5" y1="4.5" x2="4.5" y2="13.5"/></svg>`,
+    restart:    `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"><path d="M5.5 9a3.5 3.5 0 1 0 .7-2.1"/><polyline points="3,5.5 6,6.8 5.5,10"/></svg>`,
   };
 
   /**
@@ -576,14 +576,35 @@
     if (document.getElementById(INDICATOR_ID)) return;
 
     // ── Inject styles ────────────────────────────────────────────────────────
-    if (!document.getElementById("__wf_blink_style__")) {
-      const s = document.createElement("style");
-      s.id = "__wf_blink_style__";
+    {
+      let s = document.getElementById("__wf_blink_style__");
+      if (!s) {
+        s = document.createElement("style");
+        s.id = "__wf_blink_style__";
+        document.head.appendChild(s);
+      }
       s.textContent = `
+        #__workflow_rec_indicator__{
+          --wf-bg: #101116;
+          --wf-bg2: #101116;
+          --wf-bg3: #101116;
+          --wf-border: rgba(239,67,69,0.18);
+          --wf-border-strong: rgba(239,67,69,0.3);
+          --wf-text: #ef4345;
+          --wf-text-muted: rgba(239,67,69,0.78);
+          --wf-accent: #ef4345;
+          --wf-accent-hover: #ef4345;
+          --wf-red: #ef4345;
+          --wf-red-hover: #ef4345;
+          --wf-green: #ef4345;
+          --wf-yellow: #ef4345;
+          --wf-cyan: #ef4345;
+        }
+
         @keyframes __wf_ripple__{
-          0%  { box-shadow: 0 0 0 0   rgba(255,215,0,0.7),  0 4px 20px rgba(255,215,0,0.4); }
-          70% { box-shadow: 0 0 0 10px rgba(255,215,0,0),   0 4px 20px rgba(255,215,0,0.4); }
-          100%{ box-shadow: 0 0 0 0   rgba(255,215,0,0),   0 4px 20px rgba(255,215,0,0.4); }
+          0%  { box-shadow: 0 0 0 0 rgba(239,67,69,0.28), 0 14px 36px rgba(16,17,22,0.34); }
+          70% { box-shadow: 0 0 0 14px rgba(239,67,69,0), 0 14px 36px rgba(16,17,22,0.34); }
+          100%{ box-shadow: 0 0 0 0 rgba(239,67,69,0), 0 14px 36px rgba(16,17,22,0.34); }
         }
 
         #__workflow_rec_indicator__{
@@ -591,62 +612,87 @@
           bottom:25vh;right:28px;
           width:0;height:0;
           z-index:2147483647;
-          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
           touch-action:none;
           user-select:none;
         }
 
         .__wf_hub__{
           position:absolute;
-          width:54px;height:54px;
+          width:56px;height:56px;
           border-radius:50%;
-          background:#ffd700;
-          border:1.5px solid rgba(0,0,0,0.8);
+          background:
+            radial-gradient(circle at 30% 30%, rgba(239,67,69,0.16), transparent 42%),
+            linear-gradient(180deg, rgba(20,21,28,0.98), rgba(16,17,22,1));
+          border:1.5px solid var(--wf-border-strong);
           display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
           cursor:grab;
           transform:translate(-50%,-50%);
           animation:__wf_ripple__ 2s ease-out infinite;
-          transition:background 0.2s;
+          transition:transform 0.2s, box-shadow 0.2s, background 0.2s;
+          box-shadow: 0 12px 28px rgba(16,17,22,0.45), inset 0 1px 0 rgba(239,67,69,0.08);
+        }
+        .__wf_hub__:hover{
+          transform:translate(-50%,-50%) scale(1.03);
         }
         .__wf_hub__:active{cursor:grabbing;}
         .__wf_hub_label__{
-          font-size:10px;font-weight:700;color:#000;letter-spacing:1px;line-height:1;
+          font-size:10px;font-weight:800;color:var(--wf-text);letter-spacing:1.1px;line-height:1;
         }
         .__wf_hub_sub__{
-          font-size:7.5px;font-weight:500;color:rgba(0,0,0,0.7);letter-spacing:0.5px;line-height:1;
+          font-size:7.5px;font-weight:600;color:var(--wf-text-muted);letter-spacing:0.5px;line-height:1;
         }
 
         .__wf_radial_btn__{
+          all: unset;
+          box-sizing: border-box;
           position:absolute;
-          width:42px;height:42px;border-radius:50%;
-          background:rgba(0,0,0,0.9);
-          border:1px solid rgba(255,215,0,0.5);
-          backdrop-filter:blur(8px);
+          width:44px;height:44px;border-radius:50%;
+          background:
+            radial-gradient(circle at 30% 28%, rgba(239,67,69,0.12), transparent 40%),
+            linear-gradient(180deg, rgba(20,21,28,0.98), rgba(16,17,22,1));
+          border:1px solid var(--wf-btn-border, var(--wf-border-strong));
+          backdrop-filter:blur(12px);
+          -webkit-backdrop-filter:blur(12px);
           cursor:pointer;
           display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
-          box-shadow:0 2px 10px rgba(0,0,0,0.45);
+          box-shadow:0 10px 26px rgba(16,17,22,0.34), inset 0 1px 0 rgba(239,67,69,0.06);
           transform:translate(-50%,-50%) scale(0);
           opacity:0;
-          transition:transform 0.28s cubic-bezier(.34,1.56,.64,1),opacity 0.2s ease,border-color 0.15s,background 0.15s;
+          transition:transform 0.28s cubic-bezier(.34,1.56,.64,1),opacity 0.2s ease,border-color 0.15s,background 0.15s,box-shadow 0.15s;
           pointer-events:none;
+          color: var(--wf-btn-accent, var(--wf-text));
+        }
+        .__wf_radial_btn__ svg{
+          color:inherit;
+          opacity:0.95;
         }
         .__wf_radial_btn__ span.__wf_btn_label__{
-          font-size:7px;font-weight:600;color:#ffd700;
-          letter-spacing:0.5px;line-height:1;white-space:nowrap;
+          font-size:7.2px;font-weight:800;color:inherit;
+          letter-spacing:0.7px;line-height:1;white-space:nowrap;
           text-transform:uppercase;
         }
         .__wf_radial_btn__:hover{
-          background:#111;
-          border-color:#ffd700;
-          box-shadow:0 4px 16px rgba(255,215,0,0.25);
+          background:
+            radial-gradient(circle at 30% 28%, rgba(239,67,69,0.16), transparent 40%),
+            linear-gradient(180deg, rgba(24,25,33,0.98), rgba(16,17,22,1));
+          border-color:var(--wf-btn-accent, var(--wf-accent));
+          box-shadow:0 14px 30px rgba(16,17,22,0.4), 0 0 0 1px rgba(239,67,69,0.05), 0 0 18px var(--wf-btn-glow, rgba(239,67,69,0.18));
         }
         .__wf_expanded__ .__wf_radial_btn__{
           transform:translate(-50%,-50%) scale(1);
           opacity:1;
           pointer-events:auto;
         }
+
+        /* Themed radial buttons */
+        .__wf_btn_cp__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
+        .__wf_btn_net__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
+        .__wf_btn_log__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
+        .__wf_btn_save__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
+        .__wf_btn_del__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
+        .__wf_btn_rst__ { --wf-btn-accent: var(--wf-text); --wf-btn-border: rgba(239,67,69,0.24); --wf-btn-glow: rgba(239,67,69,0.18); }
       `;
-      document.head.appendChild(s);
     }
 
     // ── Build hub container ───────────────────────────────────────────────────
@@ -672,9 +718,9 @@
     // if it wasn't a drag event. We'll handle this in the hub mouse handlers.
 
     // ── Radial button factory ─────────────────────────────────────────────────
-    function makeRadialBtn(svgIcon, acronym, tipText, rx, ry, onClick) {
+    function makeRadialBtn(svgIcon, acronym, tipText, rx, ry, themeClass, onClick) {
       const btn = document.createElement("button");
-      btn.className = "__wf_radial_btn__";
+      btn.className = "__wf_radial_btn__ " + (themeClass || "");
       btn.style.left = `${rx}px`;
       btn.style.top  = `${ry}px`;
       btn.innerHTML = `${svgIcon}<span class="__wf_btn_label__">${acronym}</span>`;
@@ -696,16 +742,25 @@
     const p3 = pos(330, R1);
 
     const btnScreenshot = makeRadialBtn(SVG.screenshot, "CP", "Screenshot checkpoint",
-      p1.x, p1.y, () => {
-        const lbl = prompt("Screenshot checkpoint label (optional):");
-        if (lbl !== null) chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label: lbl }).catch(() => {});
+      p1.x, p1.y, "__wf_btn_cp__", async () => {
+        let label = null;
+        try {
+          const stored = await chrome.storage.local.get(["promptScreenshotLabel"]);
+          if (stored.promptScreenshotLabel) {
+            const prompted = prompt("Screenshot checkpoint label (optional):");
+            if (prompted === null) return;
+            label = prompted.trim() || null;
+          }
+        } catch (_) {}
+
+        chrome.runtime.sendMessage({ type: "ADD_CHECKPOINT", label }).catch(() => {});
       });
 
     const btnNetwork = makeRadialBtn(SVG.network, "NET", "Toggle Network log",
-      p2.x, p2.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {}));
+      p2.x, p2.y, "__wf_btn_net__", () => chrome.runtime.sendMessage({ type: "TOGGLE_NETWORK_DIALOG" }).catch(() => {}));
 
     const btnConsole = makeRadialBtn(SVG.console, "LOG", "Toggle Console log",
-      p3.x, p3.y, () => chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {}));
+      p3.x, p3.y, "__wf_btn_log__", () => chrome.runtime.sendMessage({ type: "TOGGLE_CONSOLE_DIALOG" }).catch(() => {}));
 
     // Outer ring — session controls
     const q1 = pos(210, R2);
@@ -718,13 +773,13 @@
     };
 
     const btnSave = makeRadialBtn(SVG.save, "SAVE", "Stop & Save",
-      q1.x, q1.y, () => {
+      q1.x, q1.y, "__wf_btn_save__", () => {
         closeAllDialogs();
         chrome.runtime.sendMessage({ type: "STOP_RECORDING" }).catch(() => {});
       });
 
     const btnDiscard = makeRadialBtn(SVG.discard, "DEL", "Discard recording",
-      q2.x, q2.y, () => {
+      q2.x, q2.y, "__wf_btn_del__", () => {
         if (confirm("Discard this recording?")) {
           closeAllDialogs();
           chrome.runtime.sendMessage({ type: "DISCARD_RECORDING" }).catch(() => {});
@@ -732,7 +787,7 @@
       });
 
     const btnRestart = makeRadialBtn(SVG.restart, "RST", "Restart recording",
-      q3.x, q3.y, () => {
+      q3.x, q3.y, "__wf_btn_rst__", () => {
         if (confirm("Restart recording? Current events will be cleared.")) {
           chrome.runtime.sendMessage({ type: "RESTART_RECORDING" }).catch(() => {});
         }

@@ -13,6 +13,7 @@
 
 // Dashboard API base URL — update this if deploying the dashboard elsewhere
 const DASHBOARD_URL = 'http://localhost:3000';
+const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
 
 const state = {
@@ -883,7 +884,17 @@ async function handleStopRecording(sendResponse) {
   sendResponse({ ok: true, events: eventsSnapshot, screenshots: screenshotsSnapshot });
 
   // Auto-save to dashboard (fire-and-forget)
-  saveToDashboard(eventsSnapshot, screenshotsSnapshot, checkpointsSnapshot).catch(e => console.warn('[WFRec] Dashboard save failed:', e));
+  saveToDashboard(eventsSnapshot, screenshotsSnapshot, checkpointsSnapshot)
+    .then(() => {
+      broadcastToPopup({ type: "DASHBOARD_SAVE_COMPLETE" });
+    })
+    .catch((e) => {
+      console.warn('[WFRec] Dashboard save failed:', e);
+      broadcastToPopup({
+        type: "DASHBOARD_SAVE_FAILED",
+        error: e?.message || "Failed to save workflow to dashboard",
+      });
+    });
 }
 
 /**
@@ -1363,6 +1374,64 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 
 // ─── Playback ─────────────────────────────────────────────────────────────────
 
+function getWorkflowLoopCount(workflow) {
+  const raw = Number.parseInt(workflow?.loopCount, 10);
+  if (!Number.isFinite(raw) || raw < 1) return 1;
+  return Math.min(99, raw);
+}
+
+function getWorkflowDisplayName(workflow) {
+  const baseName = workflow?.name || "workflow";
+  const loopCount = Number.parseInt(workflow?._loopCount, 10) || 1;
+  const loopIteration = Number.parseInt(workflow?._loopIteration, 10) || 1;
+  return loopCount > 1 ? `${baseName} (${loopIteration}/${loopCount})` : baseName;
+}
+
+function getWorkflowStartUrl(workflow) {
+  const events = Array.isArray(workflow?.events) ? workflow.events : [];
+  for (const event of events) {
+    if (typeof event?.url === "string" && event.url) {
+      return event.url;
+    }
+  }
+  return null;
+}
+
+async function primePlaybackTab(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content/player.js"]
+    });
+  } catch (e) {
+    console.warn("Could not inject player.js for loop iteration:", e);
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content/playback-capture.js"],
+      world: "MAIN",
+    });
+  } catch (_) {}
+}
+
+async function prepareWorkflowLoopIteration(workflow, loopIndex) {
+  if (loopIndex === 0) return;
+
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.id) return;
+
+  const startUrl = getWorkflowStartUrl(workflow);
+  if (startUrl && activeTab.url !== startUrl) {
+    await chrome.tabs.update(activeTab.id, { url: startUrl });
+    await waitForTabLoad(activeTab.id);
+    await sleep(800);
+  }
+
+  await primePlaybackTab(activeTab.id);
+}
+
 /**
  * Initializes the playback sequence across a queue of workflows.
  *
@@ -1382,7 +1451,10 @@ async function handleStartPlayback(workflows, sendResponse) {
   }
 
   state.mode = "playing";
-  state.workflowsToPlay = workflows;
+  state.workflowsToPlay = workflows.map((workflow) => ({
+    ...workflow,
+    loopCount: getWorkflowLoopCount(workflow),
+  }));
   state.playbackIndex = 0;
   state.screenshots = {};
   state.screenshotCount = 0;
@@ -1430,12 +1502,26 @@ async function handleStartPlayback(workflows, sendResponse) {
 async function runPlaybackQueue() {
   let anyFailed = false;
   for (let q = 0; q < state.workflowsToPlay.length; q++) {
-    state.workflowToPlay = state.workflowsToPlay[q];
-    if (state.mode !== "playing") break;
-    const runStatus = await runSinglePlayback();
-    // Stop the queue on first failure — subsequent workflows would be meaningless.
-    if (runStatus === "failed") {
-      anyFailed = true;
+    const workflow = state.workflowsToPlay[q];
+    const loopCount = getWorkflowLoopCount(workflow);
+
+    for (let loopIndex = 0; loopIndex < loopCount; loopIndex++) {
+      await prepareWorkflowLoopIteration(workflow, loopIndex);
+      state.workflowToPlay = {
+        ...workflow,
+        _loopIteration: loopIndex + 1,
+        _loopCount: loopCount,
+      };
+      if (state.mode !== "playing") break;
+      const runStatus = await runSinglePlayback();
+      // Stop the queue on first failure — subsequent workflows would be meaningless.
+      if (runStatus === "failed") {
+        anyFailed = true;
+        break;
+      }
+    }
+
+    if (state.mode !== "playing" || anyFailed) {
       break;
     }
   }
@@ -1469,6 +1555,7 @@ async function runPlaybackQueue() {
 async function runSinglePlayback() {
   const workflow = state.workflowToPlay;
   if (!workflow) return "aborted";
+  const workflowName = getWorkflowDisplayName(workflow);
 
   const events = workflow.events;
   const results = { checkpoints: {} };
@@ -1532,7 +1619,7 @@ async function runSinglePlayback() {
       };
       broadcastToPopup({
         type: "WORKFLOW_PLAYBACK_FAILED",
-        name: workflow.name || "workflow",
+        name: workflowName,
         failedStep,
       });
 
@@ -1558,7 +1645,6 @@ async function runSinglePlayback() {
   }
 
   const playedAt = Date.now();
-  const workflowName = workflow.name || "workflow";
 
   if (runStatus === "passed") {
     broadcastToPopup({ type: "WORKFLOW_PLAYBACK_COMPLETE", name: workflowName });
@@ -1580,6 +1666,27 @@ async function runSinglePlayback() {
 
 // ─── Dashboard sync helpers ───────────────────────────────────────────────────
 
+async function getDashboardAuthToken() {
+  const stored = await chrome.storage.local.get([DASHBOARD_AUTH_TOKEN_KEY]);
+  const token = stored?.[DASHBOARD_AUTH_TOKEN_KEY];
+  return typeof token === 'string' && token.trim() ? token : null;
+}
+
+async function getDashboardRequestHeaders(includeJson = true) {
+  const token = await getDashboardAuthToken();
+  if (!token) {
+    throw new Error('Sign in from the extension popup first.');
+  }
+
+  const headers = new Headers();
+  headers.set('X-Extension', 'true');
+  headers.set('Authorization', `Bearer ${token}`);
+  if (includeJson) {
+    headers.set('Content-Type', 'application/json');
+  }
+  return headers;
+}
+
 /**
  * Saves a completed recording to the remote Dashboard.
  *
@@ -1589,6 +1696,7 @@ async function runSinglePlayback() {
  * to correlate future playback runs to this master template.
  */
 async function saveToDashboard(events, screenshots, checkpointsOverride = null) {
+  const headers = await getDashboardRequestHeaders();
   const name = state.workflowName || ('recorded-workflow-' + new Date().toISOString().slice(0, 16).replace('T', ' '));
   const screenshotMap = {};
   const checkpointSource = Array.isArray(checkpointsOverride) && checkpointsOverride.length > 0
@@ -1631,7 +1739,7 @@ async function saveToDashboard(events, screenshots, checkpointsOverride = null) 
   }
   const res = await fetch(`${DASHBOARD_URL}/api/workflows`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ name, events, screenshots: screenshotMap, checkpoints }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1648,6 +1756,7 @@ async function saveToDashboard(events, screenshots, checkpointsOverride = null) 
  * to serve as proof-of-work/QA artifacts on the dashboard.
  */
 async function saveRunToDashboard(workflowId, events, checkpointsByIndex, playedAt, status = 'passed', failedStep = null) {
+  const headers = await getDashboardRequestHeaders();
   // Derive labels from the actual checkpoint events so the run reflects what was recorded.
   const checkpointEvents = (events || []).filter(e =>
     e.type === 'checkpoint' || e.type === 'console_checkpoint' || e.type === 'network_checkpoint'
@@ -1677,7 +1786,7 @@ async function saveRunToDashboard(workflowId, events, checkpointsByIndex, played
   };
   const res = await fetch(`${DASHBOARD_URL}/api/runs`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

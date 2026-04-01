@@ -22,80 +22,123 @@
   <!-- ─── IDLE MODE ─────────────────────────────────────────────── -->
   <section class="panel" id="panelIdle">
 
-    <!-- Primary actions -->
-    <div class="card">
-      <div class="card-label">New Recording</div>
-      <div class="row-gap">
-        <input
-          type="text"
-          id="workflowName"
-          class="input"
-          placeholder="Workflow name (optional)"
-          maxlength="60"
-        />
-        <button class="btn btn-record" id="btnRecord">
-          <span class="btn-icon" aria-hidden="true"></span> Start Recording
+    <div id="authProtectedContent" class="hidden">
+      <!-- Primary actions -->
+      <div class="card">
+        <div class="card-label">New Recording</div>
+        <div class="row-gap">
+          <input
+            type="text"
+            id="workflowName"
+            class="input"
+            placeholder="Workflow name (optional)"
+            maxlength="60"
+          />
+          <button class="btn btn-record" id="btnRecord">
+            <span class="btn-icon" aria-hidden="true"></span> Start Recording
+          </button>
+        </div>
+      </div>
+
+      <!-- Load & play — tabbed -->
+      <div class="card">
+        <div class="card-label">Load &amp; Play Workflow</div>
+
+        <!-- Source tabs -->
+        <div class="load-tabs">
+          <button class="load-tab active" id="tabFromFile">From File</button>
+          <button class="load-tab" id="tabFromDashboard">From Dashboard</button>
+        </div>
+
+        <!-- From File panel -->
+        <div id="paneFromFile" class="load-pane">
+          <label class="btn btn-secondary btn-full" id="btnLoadLabel">
+            <span class="btn-icon" aria-hidden="true"></span> Load Workflow JSON
+            <input type="file" id="fileInput" accept=".json" style="display:none" />
+          </label>
+        </div>
+
+        <!-- From Dashboard panel -->
+        <div id="paneFromDashboard" class="load-pane hidden">
+          <div class="db-load-row">
+            <select id="workflowSelect" class="db-select">
+              <option value="">— Select a workflow —</option>
+            </select>
+            <button class="btn btn-icon-only" id="btnAddQueueDb" disabled title="Add to Queue">+</button>
+            <button class="btn btn-icon-only" id="btnRefreshWorkflows" title="Refresh list">R</button>
+          </div>
+          <div id="dbLoadStatus" class="db-status"></div>
+        </div>
+
+        <!-- Queue List -->
+        <div id="queueContainer" class="queue-container hidden">
+          <div class="queue-label">Playback Queue (<span id="queueCount">0</span>)</div>
+          <div id="queueList" class="queue-list"></div>
+        </div>
+
+        <!-- Play Settings -->
+        <div class="settings-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; margin-top: 12px; padding: 0 4px;">
+          <label for="playBufferSeconds" style="font-size:12px; color:#9ca3af;">DOM Load Buffer (seconds):</label>
+          <input type="number" id="playBufferSeconds" class="input" style="width:60px; text-align:right; padding:4px 8px;" min="0" max="60" value="8" />
+        </div>
+
+        <button class="btn btn-play" id="btnPlay" disabled>
+          <span class="btn-icon" aria-hidden="true"></span> Play Queue
         </button>
       </div>
+
+      <!-- Dashboard hint -->
+      <p class="hint">Recordings are automatically saved to the <em>Dashboard</em>.</p>
     </div>
 
-    <!-- Load & play — tabbed -->
     <div class="card">
-      <div class="card-label">Load &amp; Play Workflow</div>
+      <div class="card-label">Account</div>
 
-      <!-- Source tabs -->
-      <div class="load-tabs">
-        <button class="load-tab active" id="tabFromFile">From File</button>
-        <button class="load-tab" id="tabFromDashboard">From Dashboard</button>
-      </div>
-
-      <!-- From File panel -->
-      <div id="paneFromFile" class="load-pane">
-        <label class="btn btn-secondary btn-full" id="btnLoadLabel">
-          <span class="btn-icon" aria-hidden="true"></span> Load Workflow JSON
-          <input type="file" id="fileInput" accept=".json" style="display:none" />
-        </label>
-      </div>
-
-      <!-- From Dashboard panel -->
-      <div id="paneFromDashboard" class="load-pane hidden">
-        <div class="db-load-row">
-          <select id="workflowSelect" class="db-select">
-            <option value="">— Select a workflow —</option>
-          </select>
-          <button class="btn btn-icon-only" id="btnAddQueueDb" disabled title="Add to Queue">+</button>
-          <button class="btn btn-icon-only" id="btnRefreshWorkflows" title="Refresh list">R</button>
+      <div id="authSignedOut" class="row-gap">
+        <div class="load-tabs">
+          <button class="load-tab active" id="authTabSignin" type="button">Sign In</button>
+          <button class="load-tab" id="authTabSignup" type="button">Sign Up</button>
         </div>
-        <div id="dbLoadStatus" class="db-status"></div>
+
+        <input
+          type="email"
+          id="authEmail"
+          class="input"
+          placeholder="Email address"
+          autocomplete="username"
+        />
+        <input
+          type="password"
+          id="authPassword"
+          class="input"
+          placeholder="Password"
+          autocomplete="current-password"
+        />
+        <input
+          type="password"
+          id="authConfirmPassword"
+          class="input hidden"
+          placeholder="Confirm password"
+          autocomplete="new-password"
+        />
+        <button class="btn btn-auth" id="btnAuthSubmit" type="button">Sign In</button>
       </div>
 
-      <!-- Queue List -->
-      <div id="queueContainer" class="queue-container hidden">
-        <div class="queue-label">Playback Queue (<span id="queueCount">0</span>)</div>
-        <div id="queueList" class="queue-list"></div>
+      <div id="authSignedIn" class="row-gap hidden">
+        <div class="auth-user-email" id="authUserEmail"></div>
+        <div class="auth-actions">
+          <button class="btn btn-secondary auth-action-btn" id="btnOpenDashboard" type="button">
+            <span class="btn-icon" aria-hidden="true"></span> Open Dashboard
+          </button>
+          <button class="btn btn-secondary auth-action-btn" id="btnOpenSettings" type="button">
+            <span class="btn-icon" aria-hidden="true"></span> Open Settings
+          </button>
+          <button class="btn btn-secondary auth-action-btn" id="btnExtensionLogout" type="button">Sign<br />Out</button>
+        </div>
       </div>
 
-      <!-- Play Settings -->
-      <div class="settings-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; margin-top: 12px; padding: 0 4px;">
-        <label for="playBufferSeconds" style="font-size:12px; color:#9ca3af;">DOM Load Buffer (seconds):</label>
-        <input type="number" id="playBufferSeconds" class="input" style="width:60px; text-align:right; padding:4px 8px;" min="0" max="60" value="8" />
-      </div>
-
-      <button class="btn btn-play" id="btnPlay" disabled>
-        <span class="btn-icon" aria-hidden="true"></span> Play Queue
-      </button>
+      <div id="authStatus" class="db-status"></div>
     </div>
-
-    <!-- Dashboard link -->
-    <div class="card">
-      <div class="card-label">Dashboard</div>
-      <button class="btn btn-secondary btn-full" id="btnOpenDashboard">
-        <span class="btn-icon" aria-hidden="true"></span> Open Dashboard
-      </button>
-    </div>
-
-    <!-- Dashboard hint -->
-    <p class="hint">Recordings are automatically saved to the <em>Dashboard</em>.</p>
   </section>
 
 
@@ -127,12 +170,13 @@
     <div class="card">
       <div class="card-label">Add Checkpoint</div>
       <div class="row-gap">
-        <input
-          type="text"
-          id="checkpointLabel"
-          class="input"
-          placeholder="Checkpoint label (optional)"
-        />
+        <label class="setting-check" for="promptScreenshotLabelToggle">
+          <input
+            type="checkbox"
+            id="promptScreenshotLabelToggle"
+          />
+          <span>Prompt for screenshot labels</span>
+        </label>
         <button class="btn btn-checkpoint" id="btnCheckpoint">
           <span class="btn-icon" aria-hidden="true"></span> Take Screenshot Checkpoint
         </button>

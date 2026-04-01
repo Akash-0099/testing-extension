@@ -1,6 +1,10 @@
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
-import { countPlaybackCheckpoints, countPlaybackRuns, listWorkflowSummaries } from '@/lib/data'
+import {
+  countPlaybackCheckpointsForUser,
+  countPlaybackRunsForUser,
+  listWorkflowSummariesForUser,
+} from '@/lib/data'
 import HomeClient from './HomeClient'
 
 /** Server page: requires session, loads workflows and aggregate stats for `HomeClient`. */
@@ -9,9 +13,9 @@ export default async function HomePage() {
   if (!session) redirect('/login')
 
   const [workflows, totalRuns, totalCheckpoints] = await Promise.all([
-    listWorkflowSummaries(),
-    countPlaybackRuns(),
-    countPlaybackCheckpoints(),
+    listWorkflowSummariesForUser(session.userId),
+    countPlaybackRunsForUser(session.userId),
+    countPlaybackCheckpointsForUser(session.userId),
   ])
 
   return (

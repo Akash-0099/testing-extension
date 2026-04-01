@@ -29,6 +29,7 @@ async function ensureIndexes(db: Db) {
   if (!globalForMongo.mongoIndexesPromise) {
     globalForMongo.mongoIndexesPromise = Promise.all([
       db.collection('users').createIndex({ email: 1 }, { unique: true }),
+      db.collection('user_settings').createIndex({ userId: 1 }, { unique: true }),
       db.collection('workflows').createIndex({ recordedAt: -1 }),
       db.collection('recording_screenshots').createIndex({ workflowId: 1, index: 1 }, { unique: true }),
       db.collection('playback_runs').createIndex({ workflowId: 1, playedAt: -1 }),

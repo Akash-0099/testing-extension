@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/auth'
-import { createWorkflowRecord, listWorkflowSummaries } from '@/lib/data'
+import { getRequestSession } from '@/lib/auth'
+import { createWorkflowRecord, listWorkflowSummariesForUser } from '@/lib/data'
 
 interface CheckpointInput {
   checkpointId?: string | null
@@ -138,20 +138,18 @@ function normalizeEvents(events: unknown[], checkpoints: CheckpointInput[]) {
 
 // GET /api/workflows — list all workflows
 export async function GET(req: NextRequest) {
-  // Allow the extension to list workflows without a browser session.
-  const isExtension = req.headers.get('X-Extension') === 'true'
-  if (!isExtension) {
-    const session = await getSession()
-    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const session = await getRequestSession(req)
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const workflows = await listWorkflowSummaries()
+  const workflows = await listWorkflowSummariesForUser(session.userId)
   return NextResponse.json(workflows)
 }
 
 // POST /api/workflows — create workflow + recording screenshots
 export async function POST(req: NextRequest) {
-  // Allow extension without session (API key check via Origin could be added later)
+  const session = await getRequestSession(req)
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   const body = await req.json() as {
     name?: string
     recordedAt?: string
@@ -191,6 +189,7 @@ export async function POST(req: NextRequest) {
   }
 
   const workflow = await createWorkflowRecord({
+    userId: session.userId,
     name,
     recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
     events: normalizedEvents,

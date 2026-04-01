@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
@@ -82,16 +83,20 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon" aria-hidden="true" />
+          <img src="/icon.svg" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
             <div className="sidebar-logo-sub">Workflow Studio</div>
           </div>
         </div>
-        <a href="/" className="nav-item">
+        <Link href="/" className="nav-item">
           <span className="nav-icon" aria-hidden="true" />
           All Workflows
-        </a>
+        </Link>
+        <Link href="/settings" className="nav-item">
+          <span className="nav-icon" aria-hidden="true" />
+          Settings
+        </Link>
         <div className="nav-item active">
           <span className="nav-icon" aria-hidden="true" />
           Detail View
@@ -174,7 +179,6 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
                   : isConsole    ? '#7c3aed'
                   : '#0891b2'
 
-                const icon = isScreenshot ? '📸' : isConsole ? '💻' : '🌐'
                 const typeLabel = isScreenshot ? 'Screenshot' : isConsole ? 'Console' : 'Network'
 
                 // Find the thumbnail for screenshot checkpoints
@@ -215,7 +219,6 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
                     {/* Content */}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                        <span style={{ fontSize: 14 }}>{icon}</span>
                         <span style={{
                           fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
                           letterSpacing: '0.6px', color: accentColor,

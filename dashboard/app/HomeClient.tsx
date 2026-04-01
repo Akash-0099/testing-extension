@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
 interface Workflow {
@@ -38,17 +39,21 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <img src="/icon.png" alt="Logo" className="sidebar-logo-icon-img" />
+          <img src="/icon.svg" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
             <div className="sidebar-logo-sub">Workflow Recorder</div>
           </div>
         </div>
 
-        <a href="/" className="nav-item active">
+        <Link href="/" className="nav-item active">
           <span className="nav-icon" aria-hidden="true" />
           Workflows
-        </a>
+        </Link>
+        <Link href="/settings" className="nav-item">
+          <span className="nav-icon" aria-hidden="true" />
+          Settings
+        </Link>
 
         <div style={{ flex: 1 }} />
 

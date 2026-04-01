@@ -5,6 +5,12 @@
 
 // Dashboard URL — keep in sync with service-worker.js
 const DASHBOARD_URL = 'http://localhost:3000';
+const DASHBOARD_AUTH_STORAGE_KEYS = ['dashboardAuthToken', 'dashboardAuthUserId', 'dashboardAuthEmail'];
+const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel'];
+const DEFAULT_USER_SETTINGS = {
+  playBufferSeconds: 8,
+  promptScreenshotLabel: false,
+};
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -19,22 +25,23 @@ const panelPlaying      = document.getElementById("panelPlaying");
 const workflowName      = document.getElementById("workflowName");
 const btnRecord         = document.getElementById("btnRecord");
 const btnOpenDashboard  = document.getElementById("btnOpenDashboard");
+const btnOpenSettings   = document.getElementById("btnOpenSettings");
 const loadedWorkflowName = document.getElementById("loadedWorkflowName");
 const btnPlay           = document.getElementById("btnPlay");
 const playBufferSeconds = document.getElementById("playBufferSeconds");
-
-// Load saved config
-chrome.storage.local.get(["playBufferSeconds"], (res) => {
-  if (res.playBufferSeconds !== undefined) {
-    playBufferSeconds.value = res.playBufferSeconds;
-  }
-});
-
-// Save on change
-playBufferSeconds.addEventListener("change", () => {
-  const val = parseInt(playBufferSeconds.value) ?? 8;
-  chrome.storage.local.set({ playBufferSeconds: Math.max(0, val) });
-});
+const promptScreenshotLabelToggle = document.getElementById("promptScreenshotLabelToggle");
+const authSignedOut     = document.getElementById("authSignedOut");
+const authSignedIn      = document.getElementById("authSignedIn");
+const authTabSignin     = document.getElementById("authTabSignin");
+const authTabSignup     = document.getElementById("authTabSignup");
+const authEmail         = document.getElementById("authEmail");
+const authPassword      = document.getElementById("authPassword");
+const authConfirmPassword = document.getElementById("authConfirmPassword");
+const btnAuthSubmit     = document.getElementById("btnAuthSubmit");
+const btnExtensionLogout = document.getElementById("btnExtensionLogout");
+const authUserEmail     = document.getElementById("authUserEmail");
+const authStatus        = document.getElementById("authStatus");
+const authProtectedContent = document.getElementById("authProtectedContent");
 
 // Load source tabs
 const tabFromFile       = document.getElementById("tabFromFile");
@@ -59,7 +66,6 @@ const queueList           = document.getElementById("queueList");
 const recEventCount     = document.getElementById("recEventCount");
 const recCheckpointCount = document.getElementById("recCheckpointCount");
 const recDuration       = document.getElementById("recDuration");
-const checkpointLabel   = document.getElementById("checkpointLabel");
 const btnCheckpoint     = document.getElementById("btnCheckpoint");
 const btnConsoleCheckpoint = document.getElementById("btnConsoleCheckpoint");
 const btnNetworkCheckpoint = document.getElementById("btnNetworkCheckpoint");
@@ -84,10 +90,24 @@ const toast             = document.getElementById("toast");
 
 let recordingStartTime  = 0;
 let durationTimer       = null;
+let authMode            = 'signin';
+let dashboardAuth       = {
+  token: null,
+  userId: null,
+  email: null,
+};
+let dashboardWorkflowsFetched = false;
+let userSettings        = { ...DEFAULT_USER_SETTINGS };
 
 // Playing state
 let workflowQueue       = [];     // array of parsed workflow JSONs to play sequentially
 let playScreenshots     = {};     // currently playing workflow's screenshots
+
+function renderCheckpointLabelMode() {
+  btnCheckpoint.title = promptScreenshotLabelToggle.checked
+    ? 'Take screenshot checkpoint and optionally enter a label'
+    : 'Take screenshot checkpoint without a label';
+}
 
 // ─── Init: sync state from service worker ────────────────────────────────────
 
@@ -112,7 +132,13 @@ async function init() {
   }
 }
 
-init();
+async function boot() {
+  await initUserSettings();
+  await init();
+  await initAuthState();
+}
+
+boot();
 
 // ─── Panel switching ──────────────────────────────────────────────────────────
 
@@ -131,9 +157,351 @@ function showPanel(mode) {
   statusBadge.className = "status-badge " + (mode !== "idle" ? mode : "");
 }
 
+// ─── Extension auth ───────────────────────────────────────────────────────────
+
+function storageGet(keys) {
+  return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+}
+
+function storageSet(items) {
+  return new Promise((resolve) => chrome.storage.local.set(items, resolve));
+}
+
+function storageRemove(keys) {
+  return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+}
+
+function normalizePlayBufferSeconds(value) {
+  const parsed = Number.parseInt(String(value ?? DEFAULT_USER_SETTINGS.playBufferSeconds), 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_USER_SETTINGS.playBufferSeconds;
+  }
+  return Math.min(60, Math.max(0, parsed));
+}
+
+function normalizeUserSettings(input = {}) {
+  return {
+    playBufferSeconds: normalizePlayBufferSeconds(input.playBufferSeconds),
+    promptScreenshotLabel: Boolean(input.promptScreenshotLabel),
+  };
+}
+
+function applyUserSettings(nextSettings = {}) {
+  userSettings = normalizeUserSettings({
+    ...userSettings,
+    ...nextSettings,
+  });
+  playBufferSeconds.value = String(userSettings.playBufferSeconds);
+  promptScreenshotLabelToggle.checked = userSettings.promptScreenshotLabel;
+  renderCheckpointLabelMode();
+  return userSettings;
+}
+
+async function persistUserSettingsLocally(nextSettings = {}) {
+  const resolvedSettings = applyUserSettings(nextSettings);
+  await storageSet({
+    playBufferSeconds: resolvedSettings.playBufferSeconds,
+    promptScreenshotLabel: resolvedSettings.promptScreenshotLabel,
+  });
+  return resolvedSettings;
+}
+
+async function initUserSettings() {
+  const storedSettings = await storageGet(USER_SETTINGS_STORAGE_KEYS);
+  await persistUserSettingsLocally(storedSettings);
+}
+
+async function syncUserSettingsFromDashboard() {
+  if (!dashboardAuth.token) {
+    return userSettings;
+  }
+
+  try {
+    const res = await dashboardFetch('/api/settings', { method: 'GET' }, true);
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data?.error || `Server returned ${res.status}`);
+    }
+
+    return persistUserSettingsLocally(data?.settings || {});
+  } catch (error) {
+    if (error.message !== 'Unauthorized') {
+      console.warn('Could not sync settings from dashboard:', error);
+    }
+    return userSettings;
+  }
+}
+
+async function saveUserSettings(nextSettings) {
+  const resolvedSettings = await persistUserSettingsLocally(nextSettings);
+
+  if (!dashboardAuth.token) {
+    return resolvedSettings;
+  }
+
+  try {
+    const res = await dashboardFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resolvedSettings),
+    }, true);
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data?.error || `Server returned ${res.status}`);
+    }
+
+    return persistUserSettingsLocally(data?.settings || resolvedSettings);
+  } catch (error) {
+    if (error.message !== 'Unauthorized') {
+      console.warn('Could not save settings to dashboard:', error);
+    }
+    return resolvedSettings;
+  }
+}
+
+async function handlePlayBufferSettingsChange() {
+  await saveUserSettings({
+    playBufferSeconds: playBufferSeconds.value,
+  });
+}
+
+async function handlePromptScreenshotSettingChange() {
+  await saveUserSettings({
+    promptScreenshotLabel: promptScreenshotLabelToggle.checked,
+  });
+}
+
+playBufferSeconds.addEventListener('change', handlePlayBufferSettingsChange);
+promptScreenshotLabelToggle.addEventListener('change', handlePromptScreenshotSettingChange);
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authTabSignin.classList.toggle('active', mode === 'signin');
+  authTabSignup.classList.toggle('active', mode === 'signup');
+  authConfirmPassword.classList.toggle('hidden', mode !== 'signup');
+  authPassword.autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
+  authConfirmPassword.autocomplete = mode === 'signup' ? 'new-password' : 'off';
+  btnAuthSubmit.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
+  authStatus.textContent = '';
+  authStatus.className = 'db-status';
+}
+
+function setAuthStatus(message = '', type = '') {
+  authStatus.textContent = message;
+  authStatus.className = 'db-status' + (type ? ' ' + type : '');
+}
+
+function resetDashboardWorkflowState() {
+  workflowSelect.options.length = 1;
+  workflowSelect.value = '';
+  workflowSelect.disabled = !dashboardAuth.token;
+  btnAddQueueDb.disabled = true;
+  dashboardWorkflowsFetched = false;
+  dbLoadStatus.textContent = dashboardAuth.token
+    ? 'Refresh to load your dashboard workflows.'
+    : 'Sign in to access dashboard workflows.';
+  dbLoadStatus.className = 'db-status';
+  workflowQueue = workflowQueue.filter((workflow) => !workflow._dashboardId);
+  renderQueue();
+}
+
+function renderAuthState() {
+  const isSignedIn = Boolean(dashboardAuth.token && dashboardAuth.email);
+
+  authSignedOut.classList.toggle('hidden', isSignedIn);
+  authSignedIn.classList.toggle('hidden', !isSignedIn);
+  authProtectedContent.classList.toggle('hidden', !isSignedIn);
+
+  if (isSignedIn) {
+    authUserEmail.textContent = dashboardAuth.email;
+    btnRecord.disabled = false;
+    setAuthStatus('');
+  } else {
+    authUserEmail.textContent = '';
+    btnRecord.disabled = true;
+    workflowSelect.disabled = true;
+    btnAddQueueDb.disabled = true;
+    if (tabFromDashboard.classList.contains('active')) {
+      dbLoadStatus.textContent = 'Sign in to access dashboard workflows.';
+      dbLoadStatus.className = 'db-status';
+    }
+  }
+}
+
+async function persistDashboardAuth(nextAuth) {
+  dashboardAuth = {
+    token: nextAuth.token || null,
+    userId: nextAuth.userId || null,
+    email: nextAuth.email || null,
+  };
+
+  await storageSet({
+    dashboardAuthToken: dashboardAuth.token,
+    dashboardAuthUserId: dashboardAuth.userId,
+    dashboardAuthEmail: dashboardAuth.email,
+  });
+  renderAuthState();
+}
+
+async function clearDashboardAuth(message = '', type = '') {
+  dashboardAuth = { token: null, userId: null, email: null };
+  await storageRemove(DASHBOARD_AUTH_STORAGE_KEYS);
+  resetDashboardWorkflowState();
+  renderAuthState();
+  if (message) {
+    setAuthStatus(message, type);
+  }
+}
+
+async function dashboardFetch(path, options = {}, requireAuth = false) {
+  const headers = new Headers(options.headers || {});
+  headers.set('X-Extension', 'true');
+
+  if (dashboardAuth.token) {
+    headers.set('Authorization', `Bearer ${dashboardAuth.token}`);
+  } else if (requireAuth) {
+    throw new Error('Please sign in to your dashboard account first.');
+  }
+
+  const response = await fetch(`${DASHBOARD_URL}${path}`, {
+    ...options,
+    headers,
+  });
+
+  if (response.status === 401 && requireAuth) {
+    await clearDashboardAuth('Session expired. Sign in again.', 'error');
+    throw new Error('Unauthorized');
+  }
+
+  return response;
+}
+
+async function initAuthState() {
+  setAuthMode('signin');
+  renderAuthState();
+
+  const stored = await storageGet(DASHBOARD_AUTH_STORAGE_KEYS);
+  if (!stored.dashboardAuthToken) {
+    resetDashboardWorkflowState();
+    renderAuthState();
+    return;
+  }
+
+  dashboardAuth = {
+    token: stored.dashboardAuthToken || null,
+    userId: stored.dashboardAuthUserId || null,
+    email: stored.dashboardAuthEmail || null,
+  };
+
+  try {
+    const res = await dashboardFetch('/api/auth/session', { method: 'GET' }, true);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const data = await res.json();
+    await persistDashboardAuth({
+      token: dashboardAuth.token,
+      userId: data?.user?.userId || null,
+      email: data?.user?.email || null,
+    });
+    await syncUserSettingsFromDashboard();
+    resetDashboardWorkflowState();
+  } catch (error) {
+    if (error.message !== 'Unauthorized') {
+      await clearDashboardAuth('Could not restore session. Sign in again.', 'error');
+    }
+  }
+}
+
+async function submitExtensionAuth() {
+  const email = authEmail.value.trim();
+  const password = authPassword.value;
+  const confirmPassword = authConfirmPassword.value;
+
+  if (!email || !password) {
+    setAuthStatus('Email and password are required.', 'error');
+    return;
+  }
+
+  if (authMode === 'signup') {
+    if (password.length < 8) {
+      setAuthStatus('Password must be at least 8 characters.', 'error');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setAuthStatus('Passwords do not match.', 'error');
+      return;
+    }
+  }
+
+  btnAuthSubmit.disabled = true;
+  setAuthStatus(authMode === 'signup' ? 'Creating account…' : 'Signing in…');
+
+  try {
+    const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
+    const res = await dashboardFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data?.error || `Server returned ${res.status}`);
+    }
+
+    await persistDashboardAuth({
+      token: data?.token || null,
+      userId: data?.user?.userId || null,
+      email: data?.user?.email || email,
+    });
+    await syncUserSettingsFromDashboard();
+
+    authPassword.value = '';
+    authConfirmPassword.value = '';
+    resetDashboardWorkflowState();
+    setAuthStatus(authMode === 'signup' ? 'Account created.' : 'Signed in.');
+    showToast(authMode === 'signup' ? 'Account created.' : 'Signed in.', 'success');
+
+    if (tabFromDashboard.classList.contains('active')) {
+      fetchDashboardWorkflows();
+    }
+  } catch (error) {
+    setAuthStatus(error.message || 'Authentication failed.', 'error');
+  } finally {
+    btnAuthSubmit.disabled = false;
+  }
+}
+
+async function logoutExtensionAuth() {
+  btnExtensionLogout.disabled = true;
+
+  try {
+    await dashboardFetch('/api/auth/logout', { method: 'POST' });
+  } catch (_) {
+    // Best effort only. The extension primarily relies on bearer tokens.
+  }
+
+  await clearDashboardAuth('Signed out.');
+  authPassword.value = '';
+  authConfirmPassword.value = '';
+  showToast('Signed out.', 'success');
+  btnExtensionLogout.disabled = false;
+}
+
+authTabSignin.addEventListener('click', () => setAuthMode('signin'));
+authTabSignup.addEventListener('click', () => setAuthMode('signup'));
+btnAuthSubmit.addEventListener('click', submitExtensionAuth);
+btnExtensionLogout.addEventListener('click', logoutExtensionAuth);
+
 // ─── Recording ────────────────────────────────────────────────────────────────
 
 btnRecord.addEventListener("click", async () => {
+  if (!dashboardAuth.token) {
+    showToast("Sign in to record workflows to your dashboard.", "error");
+    return;
+  }
+
   const name = workflowName.value.trim();
 
   // Resolve the active tab NOW while the popup window is open —
@@ -145,7 +513,6 @@ btnRecord.addEventListener("click", async () => {
     recCheckpointCount.textContent = "0";
     recDuration.textContent = "0s";
     checkpointThumbsRec.innerHTML = "";
-    checkpointLabel.value = "";
     recordingStartTime = Date.now();
     startDurationTimer();
     showPanel("recording");
@@ -172,13 +539,20 @@ function startDurationTimer() {
 }
 
 btnCheckpoint.addEventListener("click", async () => {
-  const label = checkpointLabel.value.trim() || null;
+  let label = null;
+  if (promptScreenshotLabelToggle.checked) {
+    const promptedLabel = window.prompt("Screenshot checkpoint label (optional):");
+    if (promptedLabel === null) {
+      return;
+    }
+    label = promptedLabel.trim() || null;
+  }
+
   btnCheckpoint.disabled = true;
   const res = await sendToSW({ type: "ADD_CHECKPOINT", label });
   btnCheckpoint.disabled = false;
 
   if (res?.ok) {
-    checkpointLabel.value = "";
     // Thumbnail is added via the CHECKPOINT_ADDED runtime message below
   } else {
     showToast("Checkpoint failed: " + (res?.error ?? "unknown"), "error");
@@ -226,7 +600,7 @@ btnStopRecording.addEventListener("click", async () => {
   }
 
   // Service worker automatically calls saveToDashboard — just notify the user.
-  showToast("Workflow saved to Dashboard.", "success");
+  showToast("Recording stopped. Saving to dashboard…", "success");
   showPanel("idle");
 });
 
@@ -240,7 +614,6 @@ btnRestartRecording.addEventListener("click", async () => {
     recCheckpointCount.textContent = "0";
     recDuration.textContent = "0s";
     checkpointThumbsRec.innerHTML = "";
-    checkpointLabel.value = "";
     recordingStartTime = Date.now();
     startDurationTimer();
     showToast("Recording restarted", "success");
@@ -266,8 +639,6 @@ btnDiscardRecording.addEventListener("click", async () => {
 
 // ─── Load source tabs ────────────────────────────────────────────────────────
 
-let dashboardWorkflowsFetched = false;
-
 /**
  * Switches between file-based and dashboard-based workflow loading UI.
  *
@@ -281,6 +652,13 @@ function switchLoadTab(tab) {
   tabFromDashboard.classList.toggle('active', !isFile);
   paneFromFile.classList.toggle('hidden', !isFile);
   paneFromDashboard.classList.toggle('hidden', isFile);
+  if (!isFile && !dashboardAuth.token) {
+    workflowSelect.disabled = true;
+    btnAddQueueDb.disabled = true;
+    dbLoadStatus.textContent = 'Sign in to access dashboard workflows.';
+    dbLoadStatus.className = 'db-status';
+    return;
+  }
   if (!isFile && !dashboardWorkflowsFetched) {
     dashboardWorkflowsFetched = true;
     fetchDashboardWorkflows();
@@ -298,16 +676,26 @@ tabFromDashboard.addEventListener('click', () => switchLoadTab('dashboard'));
  * status text; resets fetch flag on error so retry works.
  */
 async function fetchDashboardWorkflows() {
+  if (!dashboardAuth.token) {
+    dashboardWorkflowsFetched = false;
+    workflowSelect.options.length = 1;
+    workflowSelect.value = '';
+    workflowSelect.disabled = true;
+    btnAddQueueDb.disabled = true;
+    dbLoadStatus.textContent = 'Sign in to access dashboard workflows.';
+    dbLoadStatus.className = 'db-status';
+    return;
+  }
+
   dbLoadStatus.textContent = 'Loading…';
   dbLoadStatus.className = 'db-status';
   workflowSelect.disabled = true;
+  btnAddQueueDb.disabled = true;
   // Clear old options except placeholder
   workflowSelect.options.length = 1;
 
   try {
-    const res = await fetch(`${DASHBOARD_URL}/api/workflows`, {
-      headers: { 'X-Extension': 'true' },
-    });
+    const res = await dashboardFetch('/api/workflows', { method: 'GET' }, true);
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
     const workflows = await res.json();
     if (!Array.isArray(workflows) || workflows.length === 0) {
@@ -341,7 +729,8 @@ async function fetchDashboardWorkflows() {
     dbLoadStatus.className = 'db-status error';
     dashboardWorkflowsFetched = false;
   } finally {
-    workflowSelect.disabled = false;
+    workflowSelect.disabled = !dashboardAuth.token;
+    btnAddQueueDb.disabled = !dashboardAuth.token || !workflowSelect.value;
   }
 }
 
@@ -352,7 +741,7 @@ btnRefreshWorkflows.addEventListener('click', () => {
 });
 
 workflowSelect.addEventListener('change', () => {
-  btnAddQueueDb.disabled = !workflowSelect.value;
+  btnAddQueueDb.disabled = !dashboardAuth.token || !workflowSelect.value;
 });
 
 btnAddQueueDb.addEventListener('click', async () => {
@@ -364,14 +753,20 @@ btnAddQueueDb.addEventListener('click', async () => {
   workflowSelect.disabled = true;
 
   try {
-    const res = await fetch(`${DASHBOARD_URL}/api/workflows/${id}`, {
-      headers: { 'X-Extension': 'true' },
-    });
+    const res = await dashboardFetch(`/api/workflows/${id}`, { method: 'GET' }, true);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const wf = await res.json();
     if (!Array.isArray(wf.events)) throw new Error('Workflow has no events');
     
-    workflowQueue.push({ id: wf.id, _dashboardId: wf.id, name: wf.name, recordedAt: wf.recordedAt, events: wf.events });
+    workflowQueue.push({
+      id: wf.id,
+      _dashboardId: wf.id,
+      name: wf.name,
+      recordedAt: wf.recordedAt,
+      events: wf.events,
+      loopEnabled: false,
+      loopCount: 2,
+    });
     renderQueue();
     
     dbLoadStatus.textContent = `Added: ${wf.name}`;
@@ -380,9 +775,9 @@ btnAddQueueDb.addEventListener('click', async () => {
     dbLoadStatus.textContent = `Failed to load: ${err.message}`;
     dbLoadStatus.className = 'db-status error';
   } finally {
-    btnAddQueueDb.disabled = false;
-    workflowSelect.disabled = false;
     workflowSelect.value = ''; // Reset UI
+    btnAddQueueDb.disabled = true;
+    workflowSelect.disabled = !dashboardAuth.token;
   }
 });
 
@@ -414,9 +809,58 @@ function renderQueue() {
     let displayName = wf.name || 'Workflow';
     if (displayName.startsWith('recorded-workflow-')) displayName = displayName.replace('recorded-workflow-', 'Run ');
     
+    const topRow = document.createElement('div');
+    topRow.className = 'queue-item-top';
+
     const nameEl = document.createElement('div');
     nameEl.className = 'queue-item-name';
     nameEl.textContent = `${i + 1}. ${displayName}`;
+
+    const controlsRow = document.createElement('div');
+    controlsRow.className = 'queue-item-controls';
+
+    const loopControls = document.createElement('div');
+    loopControls.className = 'queue-loop-controls';
+
+    const loopLabel = document.createElement('label');
+    loopLabel.className = 'queue-loop-label';
+
+    const loopCheckbox = document.createElement('input');
+    loopCheckbox.type = 'checkbox';
+    loopCheckbox.checked = Boolean(wf.loopEnabled);
+    const commitLoopToggle = () => {
+      wf.loopEnabled = loopCheckbox.checked;
+      if (wf.loopEnabled && (!Number.isInteger(wf.loopCount) || wf.loopCount < 2)) {
+        wf.loopCount = 2;
+      }
+      renderQueue();
+    };
+    loopCheckbox.addEventListener('change', commitLoopToggle);
+    loopCheckbox.addEventListener('input', commitLoopToggle);
+
+    const loopText = document.createElement('span');
+    loopText.textContent = 'Loop';
+
+    const loopCount = document.createElement('input');
+    loopCount.type = 'number';
+    loopCount.min = '2';
+    loopCount.max = '99';
+    loopCount.value = String(Math.max(2, Number.parseInt(wf.loopCount, 10) || 2));
+    loopCount.className = 'input queue-loop-count';
+    loopCount.classList.toggle('hidden', !wf.loopEnabled);
+    loopCount.addEventListener('click', (event) => event.stopPropagation());
+    const commitLoopCount = () => {
+      const nextValue = Math.max(2, Number.parseInt(loopCount.value, 10) || 2);
+      wf.loopCount = nextValue;
+      loopCount.value = String(nextValue);
+    };
+    loopCount.addEventListener('input', commitLoopCount);
+    loopCount.addEventListener('change', commitLoopCount);
+
+    loopLabel.appendChild(loopCheckbox);
+    loopLabel.appendChild(loopText);
+    loopControls.appendChild(loopLabel);
+    loopControls.appendChild(loopCount);
     
     const rmBtn = document.createElement('button');
     rmBtn.className = 'queue-item-remove';
@@ -426,8 +870,11 @@ function renderQueue() {
       renderQueue();
     };
     
-    item.appendChild(nameEl);
-    item.appendChild(rmBtn);
+    topRow.appendChild(nameEl);
+    topRow.appendChild(rmBtn);
+    controlsRow.appendChild(loopControls);
+    item.appendChild(topRow);
+    item.appendChild(controlsRow);
     queueList.appendChild(item);
   });
 }
@@ -444,7 +891,12 @@ fileInput.addEventListener("change", async (e) => {
 
     if (!Array.isArray(parsed.events)) throw new Error("Invalid workflow: missing events array");
 
-    workflowQueue.push({ ...parsed, name: parsed.name || file.name });
+    workflowQueue.push({
+      ...parsed,
+      name: parsed.name || file.name,
+      loopEnabled: false,
+      loopCount: 2,
+    });
     renderQueue();
     showToast("Added to queue!", "success");
   } catch (err) {
@@ -467,7 +919,15 @@ btnPlay.addEventListener("click", async () => {
   checkpointThumbsPlay.innerHTML = "";
   noCheckpointsYet.style.display = "block";
 
-  const res = await sendToSW({ type: "START_PLAYBACK", workflows: workflowQueue });
+  const workflows = workflowQueue.map((workflow) => ({
+    ...workflow,
+    loopEnabled: Boolean(workflow.loopEnabled),
+    loopCount: workflow.loopEnabled
+      ? Math.max(2, Number.parseInt(workflow.loopCount, 10) || 2)
+      : 1,
+  }));
+
+  const res = await sendToSW({ type: "START_PLAYBACK", workflows });
   if (res?.ok) {
     showPanel("playing");
   } else {
@@ -509,6 +969,14 @@ chrome.runtime.onMessage.addListener((msg) => {
       if (recCheckpointCount) {
         recCheckpointCount.textContent = parseInt(recCheckpointCount.textContent || "0") + 1;
       }
+      break;
+
+    case "DASHBOARD_SAVE_COMPLETE":
+      showToast("Workflow saved to Dashboard.", "success");
+      break;
+
+    case "DASHBOARD_SAVE_FAILED":
+      showToast(`Dashboard save failed: ${msg.error || "unknown error"}`, "error");
       break;
 
     case "PLAYBACK_PROGRESS": {
@@ -618,6 +1086,10 @@ function addThumbnail(container, dataUrl, label, index) {
 
 btnOpenDashboard.addEventListener("click", () => {
   chrome.tabs.create({ url: DASHBOARD_URL });
+});
+
+btnOpenSettings.addEventListener("click", () => {
+  chrome.tabs.create({ url: `${DASHBOARD_URL}/settings` });
 });
 
 // ─── Utility: send message to service worker ──────────────────────────────────

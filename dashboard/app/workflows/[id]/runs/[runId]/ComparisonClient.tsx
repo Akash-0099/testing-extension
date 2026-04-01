@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 
@@ -46,6 +47,22 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     setIsMounted(true)
   }, [])
 
+  useEffect(() => {
+    if (!isMounted) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't navigate if user is typing in an input/textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+
+      if (e.key === 'ArrowLeft') {
+        setActiveIndex(prev => Math.max(0, prev - 1))
+      } else if (e.key === 'ArrowRight') {
+        setActiveIndex(prev => Math.min(run.checkpoints.length - 1, prev + 1))
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isMounted, run.checkpoints.length])
+
   function fmtDate(iso: string) {
     if (!isMounted) {
       return new Date(iso).toISOString().slice(0, 16).replace('T', ' ')
@@ -89,21 +106,45 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     return { background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }
   }
 
+  function methodBadgeStyle(method: string | null): React.CSSProperties {
+    const m = (method || '').toUpperCase()
+    let bg = 'var(--bg3)', color = 'var(--text)', borderColor = 'var(--border)'
+
+    if (m === 'GET') { bg = 'rgba(59,130,246,0.15)'; color = '#93c5fd'; borderColor = 'rgba(59,130,246,0.4)'; }
+    else if (m === 'POST') { bg = 'rgba(20,184,166,0.15)'; color = '#5eead4'; borderColor = 'rgba(20,184,166,0.4)'; }
+    else if (m === 'PUT' || m === 'PATCH') { bg = 'rgba(245,158,11,0.15)'; color = '#fcd34d'; borderColor = 'rgba(245,158,11,0.4)'; }
+    else if (m === 'DELETE') { bg = 'rgba(239,68,68,0.15)'; color = '#fca5a5'; borderColor = 'rgba(239,68,68,0.4)'; }
+
+    return {
+      background: bg, color, border: `1px solid ${borderColor}`,
+      fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
+      fontSize: 11, padding: '4px 10px', textTransform: 'uppercase', letterSpacing: '0.05em',
+      fontWeight: 700, borderRadius: '6px'
+    }
+  }
+
   function statusBadgeStyle(status: number | null | undefined): React.CSSProperties {
-    if (!status) return { background: 'var(--bg3)', color: 'var(--text-muted)' }
-    if (status >= 200 && status < 300) return { background: 'rgba(34,197,94,0.15)', color: '#16a34a', border: '1px solid rgba(34,197,94,0.3)' }
-    return { background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }
+    const base: React.CSSProperties = { 
+      fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace', 
+      fontSize: 11, padding: '4px 10px', fontWeight: 600, borderRadius: '6px', letterSpacing: '0.05em' 
+    }
+    if (!status) return { ...base, background: 'var(--bg3)', color: 'var(--text-muted)', border: '1px solid var(--border)' }
+    if (status >= 200 && status < 300) return { ...base, background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.4)' }
+    if (status >= 300 && status < 400) return { ...base, background: 'rgba(168,85,247,0.15)', color: '#d8b4fe', border: '1px solid rgba(168,85,247,0.4)' }
+    if (status >= 400 && status < 500) return { ...base, background: 'rgba(234,179,8,0.15)', color: '#fde047', border: '1px solid rgba(234,179,8,0.4)' }
+    return { ...base, background: 'rgba(239,68,68,0.15)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.4)' }
   }
 
   function monoBlock(content: string | null | undefined, placeholder = '—') {
     return (
-      <div style={{
-        fontFamily: 'monospace', fontSize: 13, background: 'var(--bg3)',
+      <div className="mono-block" style={{
+        fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace', 
+        fontSize: 12, background: '#13131a',
         border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px',
-        whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)',
-        minHeight: 56, lineHeight: 1.6,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#e2e8f0',
+        minHeight: 48, maxHeight: 300, overflowY: 'auto', lineHeight: 1.6,
       }}>
-        {content ?? <span style={{ color: 'var(--text-muted)' }}>{placeholder}</span>}
+        {content ?? <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>{placeholder}</span>}
       </div>
     )
   }
@@ -128,7 +169,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     const lines = Array.isArray(logs) ? logs.filter(Boolean) : []
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>{title}</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</div>
         {lines.length === 0
           ? monoBlock(null, 'No surrounding log')
           : monoBlock(lines.map((line) => {
@@ -143,7 +184,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
   function renderDetailBlock(title: string, value: unknown, placeholder: string) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>{title}</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</div>
         {monoBlock(prettyValue(value), placeholder)}
       </div>
     )
@@ -166,10 +207,12 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
               <span>Expected Log (Recording)</span>
               <span className="badge" style={cpTypeBadgeStyle('console')}>Console</span>
             </div>
-            {monoBlock(expectedMsg, 'No log message recorded')}
-            <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-              {renderLogContext('One Log Before', captured?.expectedContextBefore)}
-              {renderLogContext('One Log After', captured?.expectedContextAfter)}
+            <div style={{ padding: '16px' }}>
+              {monoBlock(expectedMsg, 'No log message recorded')}
+              <div style={{ display: 'grid', gap: 16, marginTop: 16 }}>
+                {renderLogContext('One Log Before', captured?.expectedContextBefore)}
+                {renderLogContext('One Log After', captured?.expectedContextAfter)}
+              </div>
             </div>
             <div className="compare-label">Recorded: {fmtDate(run.workflow.recordedAt)}</div>
           </div>
@@ -180,10 +223,12 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 {matched ? 'Matched' : 'Not Matched'}
               </span>
             </div>
-            {monoBlock(capturedMsg, 'No matching log captured')}
-            <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-              {renderLogContext('One Log Before', captured?.capturedContextBefore)}
-              {renderLogContext('One Log After', captured?.capturedContextAfter)}
+            <div style={{ padding: '16px' }}>
+              {monoBlock(capturedMsg, 'No matching log captured')}
+              <div style={{ display: 'grid', gap: 16, marginTop: 16 }}>
+                {renderLogContext('One Log Before', captured?.capturedContextBefore)}
+                {renderLogContext('One Log After', captured?.capturedContextAfter)}
+              </div>
             </div>
             <div className="compare-label">Played: {fmtDate(run.playedAt)}</div>
           </div>
@@ -206,9 +251,9 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
               <span>Expected Request (Recording)</span>
               <span className="badge" style={cpTypeBadgeStyle('network')}>Network</span>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className="badge" style={{ fontFamily: 'monospace', fontSize: 12 }}>{expMethod || '—'}</span>
+                <span className="badge" style={methodBadgeStyle(expMethod)}>{expMethod || '—'}</span>
                 <span className="badge" style={statusBadgeStyle(expStatus)}>{expStatus ?? '—'}</span>
               </div>
               {monoBlock(expUrl || null, 'No URL recorded')}
@@ -226,9 +271,9 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 {matched ? 'Matched' : 'Not Matched'}
               </span>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className="badge" style={{ fontFamily: 'monospace', fontSize: 12 }}>{capMethod || '—'}</span>
+                <span className="badge" style={methodBadgeStyle(capMethod)}>{capMethod || '—'}</span>
                 <span className="badge" style={statusBadgeStyle(capStatus ?? undefined)}>{capStatus ?? '—'}</span>
               </div>
               {monoBlock(capUrl, 'No matching request captured')}
@@ -295,40 +340,52 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
       {/* Sidebar */}
       <nav className="sidebar">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon" aria-hidden="true" />
+          <img src="/icon.svg" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
             <div className="sidebar-logo-text">QA Dashboard</div>
             <div className="sidebar-logo-sub">Workflow Studio</div>
           </div>
         </div>
-        <a href="/" className="nav-item">
+        <Link href="/" className="nav-item">
           <span className="nav-icon" aria-hidden="true" />
-          All Workflows
-        </a>
+          <span className="nav-text">All Workflows</span>
+        </Link>
+        <Link href="/settings" className="nav-item">
+          <span className="nav-icon" aria-hidden="true" />
+          <span className="nav-text">Settings</span>
+        </Link>
         <div className="nav-item" onClick={() => router.push(`/workflows/${workflowId}`)} style={{ cursor: 'pointer' }}>
           <span className="nav-icon" aria-hidden="true" />
-          Workflow Detail
+          <span className="nav-text">Workflow Detail</span>
         </div>
         <div className="nav-item active">
           <span className="nav-icon" aria-hidden="true" />
-          Comparison
+          <span className="nav-text">Comparison</span>
         </div>
 
         <hr className="divider" />
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', padding: '0 8px', marginBottom: 8 }}>
           CHECKPOINTS
         </div>
-        {pairs.map((pair, i) => (
+        {pairs.map((pair, i) => {
+          const cpColor = pair.checkpoint.checkpointType === 'console' ? 'var(--yellow)' :
+                          pair.checkpoint.checkpointType === 'network' ? 'var(--blue)' : 'var(--accent-light)';
+          
+          return (
           <button
             key={i}
             id={`checkpoint-selector-${i}`}
             className={`nav-item ${i === activeIndex ? 'active' : ''}`}
             onClick={() => setActiveIndex(i)}
+            title={pair.checkpoint.label || `CP ${i + 1}`}
+            style={i === activeIndex ? { borderLeft: `3px solid ${cpColor}` } : { borderLeft: '3px solid transparent' }}
           >
-            <span className="nav-icon" aria-hidden="true">{pair.recording || pair.checkpoint.capturedData ? 'OK' : '!'}</span>
-            {pair.checkpoint.label || `CP ${i + 1}`}
+            <span className="nav-icon" aria-hidden="true" style={{ color: cpColor, fontWeight: 'bold', fontSize: 11 }}>
+              {pair.recording || pair.checkpoint.capturedData ? 'OK' : '!'}
+            </span>
+            <span className="nav-text">{pair.checkpoint.label || `CP ${i + 1}`}</span>
           </button>
-        ))}
+        )})}
       </nav>
 
       <main className="main">

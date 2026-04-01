@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createUser, createSessionToken, SESSION_COOKIE } from '@/lib/auth'
+import { createUser, createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS } from '@/lib/auth'
 
 export async function POST(req: NextRequest) {
   const { email, password } = await req.json()
@@ -13,15 +13,24 @@ export async function POST(req: NextRequest) {
   try {
     const user = await createUser(email, password)
     const token = createSessionToken(user.userId, user.email)
-    const response = NextResponse.json({ ok: true })
+    const response = NextResponse.json({
+      ok: true,
+      token,
+      user: {
+        userId: user.userId,
+        email: user.email,
+      },
+    })
     response.cookies.set(SESSION_COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: SESSION_TTL_SECONDS,
       path: '/',
     })
     return response
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 409 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create user'
+    return NextResponse.json({ error: message }, { status: 409 })
   }
 }

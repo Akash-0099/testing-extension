@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
-import { getRunDetail } from '@/lib/data'
+import { getRunDetailForUser } from '@/lib/data'
 import ComparisonClient from './ComparisonClient'
 
 /** Server page: loads a playback run with checkpoints and baseline screenshots. */
@@ -14,7 +14,7 @@ export default async function ComparisonPage({
 
   const { id, runId } = await params
 
-  const run = await getRunDetail(runId)
+  const run = await getRunDetailForUser(runId, session.userId)
 
   if (!run || run.workflowId !== id) redirect(`/workflows/${id}`)
 

@@ -9,6 +9,15 @@ interface UserDoc {
   createdAt: Date
 }
 
+interface UserSettingsDoc {
+  _id: string
+  userId: string
+  playBufferSeconds: number
+  promptScreenshotLabel: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
 interface WorkflowDoc {
   _id: string
   name: string
@@ -56,6 +65,11 @@ export interface UserRecord {
   createdAt: string
 }
 
+export interface UserSettingsRecord {
+  playBufferSeconds: number
+  promptScreenshotLabel: boolean
+}
+
 export interface WorkflowSummary {
   id: string
   name: string
@@ -94,6 +108,7 @@ export interface WorkflowDetail {
   name: string
   recordedAt: string
   events: unknown[]
+  userId: string | null
   screenshots: RecordingScreenshotRecord[]
   runs: PlaybackRunSummary[]
 }
@@ -123,11 +138,13 @@ export interface RunDetail {
     name: string
     recordedAt: string
     events: unknown[]
+    userId: string | null
     screenshots: RecordingScreenshotRecord[]
   }
 }
 
 interface CreateWorkflowInput {
+  userId: string
   name: string
   recordedAt: Date
   events: unknown[]
@@ -140,6 +157,7 @@ interface CreateWorkflowInput {
 }
 
 interface CreateRunInput {
+  userId: string
   workflowId: string
   playedAt: Date
   status: string
@@ -153,6 +171,11 @@ interface CreateRunInput {
     dataUrl: string | null
     capturedData: string | null
   }>
+}
+
+export const DEFAULT_USER_SETTINGS: UserSettingsRecord = {
+  playBufferSeconds: 8,
+  promptScreenshotLabel: false,
 }
 
 function iso(value: Date) {
@@ -193,6 +216,30 @@ function mapCheckpoint(doc: PlaybackCheckpointDoc): PlaybackCheckpointRecord {
   }
 }
 
+function normalizePlayBufferSeconds(value: unknown) {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? DEFAULT_USER_SETTINGS.playBufferSeconds), 10)
+
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_USER_SETTINGS.playBufferSeconds
+  }
+
+  return Math.min(60, Math.max(0, Math.trunc(parsed)))
+}
+
+function mapUserSettings(doc: UserSettingsDoc | null | undefined): UserSettingsRecord {
+  if (!doc) {
+    return { ...DEFAULT_USER_SETTINGS }
+  }
+
+  return {
+    playBufferSeconds: normalizePlayBufferSeconds(doc.playBufferSeconds),
+    promptScreenshotLabel: Boolean(doc.promptScreenshotLabel),
+  }
+}
+
 function mapRun(doc: PlaybackRunDoc, checkpointCount = 0): PlaybackRunSummary {
   return {
     id: doc._id,
@@ -217,6 +264,7 @@ async function getCollections(db?: Db) {
   return {
     db: database,
     users: database.collection<UserDoc>('users'),
+    userSettings: database.collection<UserSettingsDoc>('user_settings'),
     workflows: database.collection<WorkflowDoc>('workflows'),
     recordingScreenshots: database.collection<RecordingScreenshotDoc>('recording_screenshots'),
     playbackRuns: database.collection<PlaybackRunDoc>('playback_runs'),
@@ -258,6 +306,50 @@ export async function createUserRecord(email: string, passwordHash: string) {
 
   await users.insertOne(user)
   return mapUser(user)
+}
+
+export async function getUserSettings(userId: string) {
+  const { userSettings } = await getCollections()
+  const settings = await userSettings.findOne({ userId })
+  return mapUserSettings(settings)
+}
+
+export async function upsertUserSettings(
+  userId: string,
+  input: Partial<UserSettingsRecord>
+) {
+  const { userSettings } = await getCollections()
+  const current = mapUserSettings(await userSettings.findOne({ userId }))
+  const nextSettings: UserSettingsRecord = {
+    playBufferSeconds:
+      input.playBufferSeconds === undefined
+        ? current.playBufferSeconds
+        : normalizePlayBufferSeconds(input.playBufferSeconds),
+    promptScreenshotLabel:
+      input.promptScreenshotLabel === undefined
+        ? current.promptScreenshotLabel
+        : Boolean(input.promptScreenshotLabel),
+  }
+  const now = new Date()
+
+  await userSettings.updateOne(
+    { userId },
+    {
+      $set: {
+        playBufferSeconds: nextSettings.playBufferSeconds,
+        promptScreenshotLabel: nextSettings.promptScreenshotLabel,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        _id: randomUUID(),
+        userId,
+        createdAt: now,
+      },
+    },
+    { upsert: true }
+  )
+
+  return nextSettings
 }
 
 export async function listWorkflowSummaries() {
@@ -318,6 +410,65 @@ export async function listWorkflowSummaries() {
   }))
 }
 
+export async function listWorkflowSummariesForUser(userId: string) {
+  const { workflows } = await getCollections()
+  const docs = await workflows.aggregate<{
+    _id: string
+    name: string
+    recordedAt: Date
+    screenshotCount: number
+    runCount: number
+  }>([
+    { $match: { userId } },
+    { $sort: { recordedAt: -1 } },
+    {
+      $lookup: {
+        from: 'recording_screenshots',
+        let: { workflowId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$workflowId', '$$workflowId'] } } },
+          { $count: 'count' },
+        ],
+        as: 'screenshotCounts',
+      },
+    },
+    {
+      $lookup: {
+        from: 'playback_runs',
+        let: { workflowId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$workflowId', '$$workflowId'] } } },
+          { $count: 'count' },
+        ],
+        as: 'runCounts',
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        name: 1,
+        recordedAt: 1,
+        screenshotCount: {
+          $ifNull: [{ $arrayElemAt: ['$screenshotCounts.count', 0] }, 0],
+        },
+        runCount: {
+          $ifNull: [{ $arrayElemAt: ['$runCounts.count', 0] }, 0],
+        },
+      },
+    },
+  ]).toArray()
+
+  return docs.map<WorkflowSummary>((doc) => ({
+    id: doc._id,
+    name: doc.name,
+    recordedAt: iso(doc.recordedAt),
+    _count: {
+      screenshots: doc.screenshotCount,
+      runs: doc.runCount,
+    },
+  }))
+}
+
 export async function countWorkflows() {
   const { workflows } = await getCollections()
   return workflows.countDocuments()
@@ -328,9 +479,28 @@ export async function countPlaybackRuns() {
   return playbackRuns.countDocuments()
 }
 
+export async function countPlaybackRunsForUser(userId: string) {
+  const { playbackRuns } = await getCollections()
+  return playbackRuns.countDocuments({ userId })
+}
+
 export async function countPlaybackCheckpoints() {
   const { playbackCheckpoints } = await getCollections()
   return playbackCheckpoints.countDocuments()
+}
+
+export async function countPlaybackCheckpointsForUser(userId: string) {
+  const { playbackRuns, playbackCheckpoints } = await getCollections()
+  const runs = await playbackRuns.find(
+    { userId },
+    { projection: { _id: 1 } }
+  ).toArray()
+
+  if (runs.length === 0) return 0
+
+  return playbackCheckpoints.countDocuments({
+    runId: { $in: runs.map((run) => run._id) },
+  })
 }
 
 export async function getWorkflowDetail(id: string) {
@@ -350,6 +520,30 @@ export async function getWorkflowDetail(id: string) {
     name: workflow.name,
     recordedAt: iso(workflow.recordedAt),
     events: Array.isArray(workflow.events) ? workflow.events : [],
+    userId: workflow.userId ?? null,
+    screenshots: screenshots.map(mapScreenshot),
+    runs: runs.map((run) => mapRun(run, checkpointCounts.get(run._id) ?? 0)),
+  } satisfies WorkflowDetail
+}
+
+export async function getWorkflowDetailForUser(id: string, userId: string) {
+  const { workflows, recordingScreenshots, playbackRuns } = await getCollections()
+  const workflow = await workflows.findOne({ _id: id, userId })
+  if (!workflow) return null
+
+  const [screenshots, runs] = await Promise.all([
+    recordingScreenshots.find({ workflowId: id }).sort({ index: 1 }).toArray(),
+    playbackRuns.find({ workflowId: id, userId }).sort({ playedAt: -1 }).toArray(),
+  ])
+
+  const checkpointCounts = await getCheckpointCountsByRunId(runs.map((run) => run._id))
+
+  return {
+    id: workflow._id,
+    name: workflow.name,
+    recordedAt: iso(workflow.recordedAt),
+    events: Array.isArray(workflow.events) ? workflow.events : [],
+    userId: workflow.userId ?? null,
     screenshots: screenshots.map(mapScreenshot),
     runs: runs.map((run) => mapRun(run, checkpointCounts.get(run._id) ?? 0)),
   } satisfies WorkflowDetail
@@ -382,6 +576,40 @@ export async function getRunDetail(runId: string) {
       name: workflow.name,
       recordedAt: iso(workflow.recordedAt),
       events: Array.isArray(workflow.events) ? workflow.events : [],
+      userId: workflow.userId ?? null,
+      screenshots: screenshots.map(mapScreenshot),
+    },
+  } satisfies RunDetail
+}
+
+export async function getRunDetailForUser(runId: string, userId: string) {
+  const { workflows, recordingScreenshots, playbackRuns, playbackCheckpoints } = await getCollections()
+  const run = await playbackRuns.findOne({ _id: runId, userId })
+  if (!run) return null
+
+  const [workflow, checkpoints, screenshots] = await Promise.all([
+    workflows.findOne({ _id: run.workflowId, userId }),
+    playbackCheckpoints.find({ runId }).sort({ index: 1 }).toArray(),
+    recordingScreenshots.find({ workflowId: run.workflowId }).sort({ index: 1 }).toArray(),
+  ])
+
+  if (!workflow) return null
+
+  return {
+    id: run._id,
+    workflowId: run.workflowId,
+    playedAt: iso(run.playedAt),
+    status: run.status,
+    failedEventIndex: run.failedEventIndex ?? null,
+    failedEventType: run.failedEventType ?? null,
+    failedEventSelector: run.failedEventSelector ?? null,
+    checkpoints: checkpoints.map(mapCheckpoint),
+    workflow: {
+      id: workflow._id,
+      name: workflow.name,
+      recordedAt: iso(workflow.recordedAt),
+      events: Array.isArray(workflow.events) ? workflow.events : [],
+      userId: workflow.userId ?? null,
       screenshots: screenshots.map(mapScreenshot),
     },
   } satisfies RunDetail
@@ -396,7 +624,7 @@ export async function createWorkflowRecord(input: CreateWorkflowInput) {
     name: input.name,
     recordedAt: input.recordedAt,
     events: Array.isArray(input.events) ? input.events : [],
-    userId: null,
+    userId: input.userId,
   }
 
   await workflows.insertOne(workflow)
@@ -420,7 +648,7 @@ export async function createWorkflowRecord(input: CreateWorkflowInput) {
 
 export async function createRunRecord(input: CreateRunInput) {
   const { workflows, playbackRuns, playbackCheckpoints } = await getCollections()
-  const workflow = await workflows.findOne({ _id: input.workflowId })
+  const workflow = await workflows.findOne({ _id: input.workflowId, userId: input.userId })
   if (!workflow) {
     throw new Error('Workflow not found')
   }
@@ -430,7 +658,7 @@ export async function createRunRecord(input: CreateRunInput) {
     _id: runId,
     workflowId: input.workflowId,
     playedAt: input.playedAt,
-    userId: null,
+    userId: input.userId,
     status: input.status,
     failedEventIndex: input.failedEventIndex ?? null,
     failedEventType: input.failedEventType ?? null,

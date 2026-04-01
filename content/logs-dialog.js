@@ -284,11 +284,11 @@
       height: 560px;
       min-width: 320px;
       min-height: 260px;
-      background: #111827;
-      color: #f3f4f6;
-      border: 1px solid #374151;
-      border-radius: 8px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      background: #0f1117;
+      color: #f0f0f5;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.6);
       z-index: 2147483647;
       display: flex;
       flex-direction: column;
@@ -303,8 +303,8 @@
     const header = document.createElement("div");
     header.style.cssText = `
       padding: 10px 14px;
-      background: #1f2937;
-      border-bottom: 1px solid #374151;
+      background: #1a1d27;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -319,14 +319,14 @@
 
     const countBadge = document.createElement("span");
     countBadge.id = config.id + "_count";
-    countBadge.style.cssText = "font-size: 10px; background: #374151; color: #9ca3af; padding: 1px 6px; border-radius: 10px;";
+    countBadge.style.cssText = "font-size: 10px; background: rgba(255,255,255,0.08); color: #8b8fa8; padding: 2px 8px; border-radius: 12px;";
     countBadge.textContent = "0";
 
     const clearBtn = document.createElement("button");
     clearBtn.textContent = "Clear";
     clearBtn.style.cssText = `
-      background: transparent; border: 1px solid #374151; color: #9ca3af;
-      font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+      background: transparent; border: 1px solid rgba(255,255,255,0.1); color: #8b8fa8;
+      font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
     `;
     clearBtn.onclick = () => {
       DIALOGS[type].items = [];
@@ -345,8 +345,8 @@
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "×";
     closeBtn.style.cssText = `
-      background: transparent; border: none; color: #9ca3af;
-      font-size: 20px; cursor: pointer; line-height: 1; padding: 0;
+      background: transparent; border: none; color: #8b8fa8;
+      font-size: 24px; cursor: pointer; line-height: 1; padding: 0 4px;
     `;
     closeBtn.onclick = () => {
       dialog.style.display = "none";
@@ -428,8 +428,8 @@
     labelInput.type = "text";
     labelInput.placeholder = "Checkpoint label (optional)";
     labelInput.style.cssText = `
-      flex: 1; background: #374151; border: 1px solid #4b5563;
-      color: #f3f4f6; border-radius: 4px; padding: 6px 10px; font-size: 12px; outline: none;
+      flex: 1; background: #242736; border: 1px solid rgba(255,255,255,0.1);
+      color: #f0f0f5; border-radius: 6px; padding: 8px 12px; font-size: 12px; outline: none;
     `;
 
     const addBtn = document.createElement("button");
@@ -437,9 +437,9 @@
     addBtn.textContent = "Add Checkpoint";
     addBtn.disabled = true;
     addBtn.style.cssText = `
-      background: #2563eb; color: #fff; border: none; border-radius: 4px;
-      padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer;
-      opacity: 0.5; transition: background 0.2s, opacity 0.2s; white-space: nowrap;
+      background: #6366f1; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      opacity: 0.5; transition: background 0.15s, opacity 0.15s; white-space: nowrap;
     `;
     addBtn.onclick = () => handleAddCheckpoint(type);
 
@@ -522,18 +522,19 @@
       const isSelected = selectedKey ? selectedKey === getItemKey(type, item) : false;
       const row = document.createElement("div");
       row.style.cssText = `
-        padding: 7px 12px;
-        border-bottom: 1px solid #1f2937;
+        padding: 8px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
         font-size: 11px;
         cursor: pointer;
         display: flex;
         align-items: flex-start;
         gap: 7px;
-        background: ${isSelected ? "#1e3a8a" : "transparent"};
+        background: ${isSelected ? "rgba(99,102,241,0.15)" : "transparent"};
+        border-left: ${isSelected ? "3px solid #6366f1" : "3px solid transparent"};
         transition: background 0.12s;
         word-break: break-all;
       `;
-      row.onmouseover = () => { if (!isSelected) row.style.background = "#1f2937"; };
+      row.ononmouseover = () => { if (!isSelected) row.style.background = "rgba(255,255,255,0.03)"; };
       row.onmouseout  = () => { if (!isSelected) row.style.background = "transparent"; };
       row.onclick = () => {
         DIALOGS[type].selected = item;
@@ -548,8 +549,8 @@
       const time = new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
       if (type === "console") {
-        const levelColors = { warn: "#fbbf24", error: "#f87171", info: "#60a5fa", debug: "#9ca3af" };
-        const levelColor = levelColors[item.level] || "#d1d5db";
+        const levelColors = { warn: "#ef4345", error: "#ef4345", info: "#3b82f6", debug: "#8b8fa8" };
+        const levelColor = levelColors[item.level] || "#f0f0f5";
         const badge = document.createElement("span");
         badge.textContent = (item.level || "log").toUpperCase().slice(0, 4);
         badge.style.cssText = `font-size: 9px; font-weight: 700; padding: 2px 4px; border-radius: 3px; background: #374151; color: ${levelColor}; flex-shrink: 0; margin-top: 1px;`;
@@ -569,8 +570,8 @@
       } else {
         // Network row
         const methodStr = String(item.method || "GET");
-        const methodColors = { GET: "#3b82f6", POST: "#10b981", PUT: "#f59e0b", PATCH: "#f59e0b", DELETE: "#ef4444" };
-        const methodColor = methodColors[methodStr] || "#6b7280";
+        const methodColors = { GET: "#3b82f6", POST: "#22c55e", PUT: "#ef4345", PATCH: "#ef4345", DELETE: "#ef4345" };
+        const methodColor = methodColors[methodStr] || "#8b8fa8";
 
         const method = document.createElement("span");
         method.textContent = methodStr;
