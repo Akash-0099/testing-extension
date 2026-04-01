@@ -1,7 +1,6 @@
-import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
-import { prisma } from '@/lib/prisma'
+import { countPlaybackCheckpoints, countPlaybackRuns, listWorkflowSummaries } from '@/lib/data'
 import HomeClient from './HomeClient'
 
 /** Server page: requires session, loads workflows and aggregate stats for `HomeClient`. */
@@ -9,19 +8,15 @@ export default async function HomePage() {
   const session = await getSession()
   if (!session) redirect('/login')
 
-  const workflows = await prisma.workflow.findMany({
-    orderBy: { recordedAt: 'desc' },
-    include: {
-      _count: { select: { screenshots: true, runs: true } },
-    },
-  })
-
-  const totalRuns = await prisma.playbackRun.count()
-  const totalCheckpoints = await prisma.playbackCheckpoint.count()
+  const [workflows, totalRuns, totalCheckpoints] = await Promise.all([
+    listWorkflowSummaries(),
+    countPlaybackRuns(),
+    countPlaybackCheckpoints(),
+  ])
 
   return (
     <HomeClient
-      workflows={workflows as any}
+      workflows={workflows}
       stats={{ workflows: workflows.length, runs: totalRuns, checkpoints: totalCheckpoints }}
       userEmail={session.email}
     />

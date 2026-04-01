@@ -1,12 +1,67 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
 import { getSession } from '@/lib/auth'
+import { createWorkflowRecord, listWorkflowSummaries } from '@/lib/data'
+
+interface CheckpointInput {
+  checkpointId?: string | null
+  type?: unknown
+  label?: string | null
+  url?: string | null
+  timestamp?: number | null
+  screenshotIndex?: number | null
+  logMessage?: string | null
+  logLevel?: string | null
+  logTimestamp?: number | string | null
+  logUrl?: string | null
+  logContextBefore?: unknown[]
+  logContextAfter?: unknown[]
+  networkUrl?: string | null
+  networkMethod?: string | null
+  networkStatus?: number | null
+  networkStatusText?: string | null
+  networkRequestHeaders?: unknown
+  networkResponseHeaders?: unknown
+  networkRequestBody?: unknown
+  networkResponseBody?: unknown
+}
+
+interface CheckpointEvent {
+  checkpointId?: string | null
+  type?: unknown
+  label?: string | null
+  timestamp?: number | null
+  url?: string | null
+}
+
+interface ScreenshotCheckpointEvent extends CheckpointEvent {
+  type: 'checkpoint'
+}
 
 function isCheckpointType(type: unknown) {
   return type === 'checkpoint' || type === 'console_checkpoint' || type === 'network_checkpoint'
 }
 
-function checkpointToEvent(checkpoint: any) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isCheckpointInput(value: unknown): value is CheckpointInput {
+  return isRecord(value)
+}
+
+function asCheckpointEvent(value: unknown): CheckpointEvent | null {
+  return isRecord(value) ? (value as CheckpointEvent) : null
+}
+
+function isCheckpointEvent(value: CheckpointEvent | null): value is CheckpointEvent {
+  return value !== null && isCheckpointType(value.type)
+}
+
+function isScreenshotCheckpointEvent(value: unknown): value is ScreenshotCheckpointEvent {
+  return isRecord(value) && value.type === 'checkpoint'
+}
+
+function checkpointToEvent(checkpoint: CheckpointInput | null) {
   if (!checkpoint || !isCheckpointType(checkpoint.type)) return null
   return {
     checkpointId: checkpoint.checkpointId ?? null,
@@ -32,9 +87,9 @@ function checkpointToEvent(checkpoint: any) {
   }
 }
 
-function normalizeEvents(events: any[], checkpoints: any[]) {
+function normalizeEvents(events: unknown[], checkpoints: CheckpointInput[]) {
   const eventList = Array.isArray(events) ? [...events] : []
-  const explicitCheckpoints: any[] = []
+  const explicitCheckpoints: CheckpointEvent[] = []
   if (Array.isArray(checkpoints)) {
     checkpoints.forEach((checkpoint) => {
       const mapped = checkpointToEvent(checkpoint)
@@ -46,8 +101,9 @@ function normalizeEvents(events: any[], checkpoints: any[]) {
 
   const existingCheckpointKeys = new Set(
     eventList
-      .filter((event) => isCheckpointType(event?.type))
-      .map((event) => event?.checkpointId
+      .map(asCheckpointEvent)
+      .filter(isCheckpointEvent)
+      .map((event) => event.checkpointId
         ? `checkpoint:${event.checkpointId}`
         : JSON.stringify([
             event.type ?? null,
@@ -58,7 +114,7 @@ function normalizeEvents(events: any[], checkpoints: any[]) {
   )
 
   explicitCheckpoints.forEach((checkpoint) => {
-    const key = checkpoint?.checkpointId
+    const key = checkpoint.checkpointId
       ? `checkpoint:${checkpoint.checkpointId}`
       : JSON.stringify([
           checkpoint.type ?? null,
@@ -71,7 +127,12 @@ function normalizeEvents(events: any[], checkpoints: any[]) {
     }
   })
 
-  eventList.sort((a, b) => (a?.timestamp ?? 0) - (b?.timestamp ?? 0))
+  eventList.sort((left, right) => {
+    const leftTimestamp = asCheckpointEvent(left)?.timestamp ?? 0
+    const rightTimestamp = asCheckpointEvent(right)?.timestamp ?? 0
+    return leftTimestamp - rightTimestamp
+  })
+
   return eventList
 }
 
@@ -84,57 +145,63 @@ export async function GET(req: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const workflows = await prisma.workflow.findMany({
-    orderBy: { recordedAt: 'desc' },
-    include: {
-      _count: { select: { screenshots: true, runs: true } },
-    },
-  })
+  const workflows = await listWorkflowSummaries()
   return NextResponse.json(workflows)
 }
 
 // POST /api/workflows — create workflow + recording screenshots
 export async function POST(req: NextRequest) {
   // Allow extension without session (API key check via Origin could be added later)
-  const body = await req.json()
+  const body = await req.json() as {
+    name?: string
+    recordedAt?: string
+    events?: unknown
+    screenshots?: Record<string, unknown> | null
+    checkpoints?: unknown
+  }
   const { name, recordedAt, events, screenshots, checkpoints } = body
   const normalizedEvents = normalizeEvents(
     Array.isArray(events) ? events : [],
-    Array.isArray(checkpoints) ? checkpoints : []
+    Array.isArray(checkpoints) ? checkpoints.filter(isCheckpointInput) : []
   )
-  const checkpointEvents = normalizedEvents.filter((e: any) => e?.type === 'checkpoint')
+  const checkpointEvents = normalizedEvents.filter(isScreenshotCheckpointEvent)
 
   if (!name || !Array.isArray(events)) {
     return NextResponse.json({ error: 'name and events required' }, { status: 400 })
   }
 
-  const workflow = await prisma.workflow.create({
-    data: {
-      name,
-      recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
-      events: normalizedEvents,
-    },
-  })
+  const screenshotData: Array<{
+    index: number
+    label: string | null
+    url: string | null
+    dataUrl: string
+  }> = []
 
-  // Bulk-insert recording screenshots if provided
   if (screenshots && typeof screenshots === 'object') {
-    const screenshotData = Object.entries(screenshots).map(([idx, dataUrl]) => {
-      const checkpoint = checkpointEvents[parseInt(idx)]
-      return {
-        workflowId: workflow.id,
-        index: parseInt(idx),
-        label: checkpoint?.label ?? `Checkpoint ${parseInt(idx) + 1}`,
+    Object.entries(screenshots).forEach(([idx, dataUrl]) => {
+      const screenshotIndex = Number.parseInt(idx, 10)
+      const checkpoint = checkpointEvents[screenshotIndex]
+      screenshotData.push({
+        index: screenshotIndex,
+        label: checkpoint?.label ?? `Checkpoint ${screenshotIndex + 1}`,
         url: checkpoint?.url ?? null,
-        dataUrl: dataUrl as string,
-      }
+        dataUrl: typeof dataUrl === 'string' ? dataUrl : '',
+      })
     })
-    if (screenshotData.length > 0) {
-      await prisma.recordingScreenshot.createMany({ data: screenshotData })
-    }
   }
+
+  const workflow = await createWorkflowRecord({
+    name,
+    recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
+    events: normalizedEvents,
+    screenshots: screenshotData,
+  })
 
   return NextResponse.json({
     id: workflow.id,
-    checkpointCount: normalizedEvents.filter((event: any) => isCheckpointType(event?.type)).length,
+    checkpointCount: normalizedEvents
+      .map(asCheckpointEvent)
+      .filter(isCheckpointEvent)
+      .length,
   }, { status: 201 })
 }

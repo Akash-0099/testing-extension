@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
-import { prisma } from '@/lib/prisma'
+import { getRunDetail } from '@/lib/data'
 import ComparisonClient from './ComparisonClient'
 
 /** Server page: loads a playback run with checkpoints and baseline screenshots. */
@@ -14,17 +14,9 @@ export default async function ComparisonPage({
 
   const { id, runId } = await params
 
-  const run = await prisma.playbackRun.findUnique({
-    where: { id: runId },
-    include: {
-      checkpoints: { orderBy: { index: 'asc' } },
-      workflow: {
-        include: { screenshots: { orderBy: { index: 'asc' } } },
-      },
-    },
-  })
+  const run = await getRunDetail(runId)
 
   if (!run || run.workflowId !== id) redirect(`/workflows/${id}`)
 
-  return <ComparisonClient run={run as any} workflowId={id} />
+  return <ComparisonClient run={run} workflowId={id} />
 }

@@ -1,10 +1,10 @@
 /**
  * Session management using cookies + DB user lookup.
- * Passwords are stored as bcrypt hashes in the users table.
+ * Passwords are stored as bcrypt hashes in MongoDB.
  */
 import { cookies } from 'next/headers'
-import { prisma } from './prisma'
 import bcrypt from 'bcryptjs'
+import { createUserRecord, findUserByEmail } from './data'
 
 const SESSION_COOKIE = 'qa_session'
 
@@ -30,17 +30,15 @@ export function createSessionToken(userId: string, email: string) {
 }
 
 export async function checkCredentials(email: string, password: string): Promise<{ userId: string; email: string } | null> {
-  const user = await prisma.user.findUnique({ where: { email } })
+  const user = await findUserByEmail(email)
   if (!user) return null
   const valid = await bcrypt.compare(password, user.passwordHash)
   return valid ? { userId: user.id, email: user.email } : null
 }
 
 export async function createUser(email: string, password: string): Promise<{ userId: string; email: string }> {
-  const existing = await prisma.user.findUnique({ where: { email } })
-  if (existing) throw new Error('An account with this email already exists')
   const passwordHash = await bcrypt.hash(password, 12)
-  const user = await prisma.user.create({ data: { email, passwordHash } })
+  const user = await createUserRecord(email, passwordHash)
   return { userId: user.id, email: user.email }
 }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { getRunDetail } from '@/lib/data'
 
 // GET /api/runs/[runId] — full run with checkpoints
 export async function GET(
@@ -7,15 +7,7 @@ export async function GET(
   { params }: { params: Promise<{ runId: string }> }
 ) {
   const { runId } = await params
-  const run = await prisma.playbackRun.findUnique({
-    where: { id: runId },
-    include: {
-      checkpoints: { orderBy: { index: 'asc' } },
-      workflow: {
-        include: { screenshots: { orderBy: { index: 'asc' } } },
-      },
-    },
-  })
+  const run = await getRunDetail(runId)
   if (!run) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json(run)
 }

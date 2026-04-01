@@ -2,6 +2,9 @@
   "name": "dashboard",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "21.x"
+  },
   "scripts": {
     "dev": "next dev",
     "dev21": "$HOME/.nvm/versions/node/v21.7.3/bin/node ./node_modules/.bin/next dev",
@@ -11,12 +14,10 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.4",
-    "@prisma/client": "^6.19.2",
     "@types/bcryptjs": "^2.4.6",
     "bcryptjs": "^3.0.3",
+    "mongodb": "^6.20.0",
     "next": "16.2.0",
-    "prisma": "^6.19.2",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
