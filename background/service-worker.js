@@ -2350,6 +2350,8 @@ async function broadcastToPopup(msg) {
 async function replayEventInPage(event, timeoutMs = 8000) {
   const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   // Interactive event types that require a target element to succeed.
+  // "scroll" is intentionally excluded: it has a legitimate window-fallback and should
+  // never be treated as a hard failure when the recorded element is gone.
   const interactiveTypes = ["click", "right_click", "long_press", "toggle", "input", "change", "keydown"];
 
   // Use the CSS selector as the authoritative element signal.
@@ -2442,8 +2444,11 @@ async function replayEventInPage(event, timeoutMs = 8000) {
 
       // Phase 3 — last-resort coordinate hit-test.
       // Only reached when both Phase 1 (exact selector) and Phase 2 (relaxed selector)
-      // produced zero DOM candidates. elementFromPoint() is used deliberately here:
-      // a coordinate hit is strictly better than an immediate hard failure.
+      // produced zero DOM candidates. elementFromPoint() is used deliberately here but
+      // with a strict coherence guard: we only accept the hit if the element (or one of
+      // its ancestors) actually matches the loose selector. Without this guard,
+      // elementFromPoint() always returns *something* (a random div, a nav bar, etc.)
+      // causing the step to silently pass even though the intended element is gone.
       //
       // Two pitfalls handled explicitly:
       //  a) The player HUD is fixed to the viewport and can sit on top of the target
@@ -2499,7 +2504,23 @@ async function replayEventInPage(event, timeoutMs = 8000) {
             if (leafSel) {
               try { candidate = hit.closest(leafSel) || hit; } catch (_) {}
             }
-            resolvedEl = candidate;
+
+            // ── Coherence guard ──────────────────────────────────────────────
+            // Only accept the coordinate-hit candidate if it (or an ancestor)
+            // actually matches the loose selector. If it doesn't, the element is
+            // genuinely absent — return element_not_found instead of silently
+            // clicking a random element at those coordinates.
+            let coherent = false;
+            if (leafSel) {
+              try {
+                coherent = candidate.matches(leafSel) || !!candidate.closest(leafSel);
+              } catch (_) {}
+            }
+            // If we have no loose selector to verify against, allow the hit
+            // (original behaviour for un-selectable elements recorded by coords only).
+            if (!leafSel || coherent) {
+              resolvedEl = candidate;
+            }
           }
         } catch (_) {}
       }
