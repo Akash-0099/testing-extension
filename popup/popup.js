@@ -505,7 +505,7 @@ async function logoutExtensionAuth() {
   btnExtensionLogout.disabled = true;
 
   try {
-    await dashboardFetch('/api/auth/logout', { method: 'POST' });
+    await dashboardFetch('/api/auth/logout', { method: 'POST' }, true);
   } catch (_) {
     // Best effort only. The extension primarily relies on bearer tokens.
   }

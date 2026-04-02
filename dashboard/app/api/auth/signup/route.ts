@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const user = await createUser(email, password)
-    const token = createSessionToken(user.userId, user.email)
+    const token = await createSessionToken(user.userId, user.email)
     const response = NextResponse.json({
       ok: true,
       token,
