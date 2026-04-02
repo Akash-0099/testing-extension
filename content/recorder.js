@@ -565,6 +565,130 @@
   };
 
   /**
+   * L3 — Custom dialog helpers
+   *
+   * Native confirm() and prompt() are silently suppressed in cross-origin iframes
+   * on most modern sites, causing actions to fail invisibly. These lightweight
+   * overlays match the extension's dark-glass aesthetic and are fully keyboard
+   * accessible (Enter to confirm, Escape to cancel).
+   */
+
+  const WF_DIALOG_STYLE = `
+    position:fixed;inset:0;z-index:2147483646;
+    background:rgba(0,0,0,0.55);
+    display:flex;align-items:center;justify-content:center;
+  `;
+  const WF_PANEL_STYLE = `
+    background:linear-gradient(180deg,rgba(20,21,28,0.98),rgba(16,17,22,1));
+    border:1.5px solid rgba(239,67,69,0.3);border-radius:12px;
+    padding:20px 24px;max-width:320px;width:90vw;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    box-shadow:0 16px 48px rgba(0,0,0,0.6);
+  `;
+  const WF_MSG_STYLE   = "color:#e5e7eb;font-size:13px;margin:0 0 14px;line-height:1.5;";
+  const WF_ROW_STYLE   = "display:flex;gap:8px;justify-content:flex-end;";
+  const WF_CANCEL_STYLE = `
+    padding:7px 16px;border-radius:6px;
+    background:transparent;border:1px solid rgba(255,255,255,0.15);
+    color:#9ca3af;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;
+  `;
+  const WF_OK_STYLE = `
+    padding:7px 16px;border-radius:6px;
+    background:rgba(239,67,69,0.85);border:none;
+    color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;
+  `;
+
+  function wfConfirm(message) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.style.cssText = WF_DIALOG_STYLE;
+      const panel = document.createElement("div");
+      panel.style.cssText = WF_PANEL_STYLE;
+
+      const msg = document.createElement("p");
+      msg.style.cssText = WF_MSG_STYLE;
+      msg.textContent = message;
+
+      const row = document.createElement("div");
+      row.style.cssText = WF_ROW_STYLE;
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.style.cssText = WF_CANCEL_STYLE;
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.textContent = "Confirm";
+      confirmBtn.style.cssText = WF_OK_STYLE;
+
+      const done = (result) => { overlay.remove(); document.removeEventListener("keydown", onKey); resolve(result); };
+      cancelBtn.onclick  = () => done(false);
+      confirmBtn.onclick = () => done(true);
+      const onKey = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
+      document.addEventListener("keydown", onKey);
+
+      row.appendChild(cancelBtn);
+      row.appendChild(confirmBtn);
+      panel.appendChild(msg);
+      panel.appendChild(row);
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      confirmBtn.focus();
+    });
+  }
+
+  function wfPrompt(message) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.style.cssText = WF_DIALOG_STYLE;
+      const panel = document.createElement("div");
+      panel.style.cssText = WF_PANEL_STYLE;
+
+      const msg = document.createElement("p");
+      msg.style.cssText = WF_MSG_STYLE;
+      msg.textContent = message;
+
+      const inputEl = document.createElement("input");
+      inputEl.type = "text";
+      inputEl.placeholder = "Label (optional)";
+      inputEl.style.cssText = `
+        width:100%;box-sizing:border-box;
+        background:#1e2030;border:1px solid rgba(255,255,255,0.15);
+        color:#f0f0f5;border-radius:6px;
+        padding:8px 12px;font-size:12px;outline:none;
+        font-family:inherit;margin-bottom:14px;
+      `;
+
+      const row = document.createElement("div");
+      row.style.cssText = WF_ROW_STYLE;
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.style.cssText = WF_CANCEL_STYLE;
+
+      const okBtn = document.createElement("button");
+      okBtn.textContent = "OK";
+      okBtn.style.cssText = WF_OK_STYLE;
+
+      const done = (result) => { overlay.remove(); resolve(result); };
+      cancelBtn.onclick = () => done(null);
+      okBtn.onclick     = () => done(inputEl.value);
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter")  done(inputEl.value);
+        if (e.key === "Escape") done(null);
+      });
+
+      row.appendChild(cancelBtn);
+      row.appendChild(okBtn);
+      panel.appendChild(msg);
+      panel.appendChild(inputEl);
+      panel.appendChild(row);
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      setTimeout(() => inputEl.focus(), 30);
+    });
+  }
+
+  /**
    * Renders the visual recording indicator HUD.
    *
    * Strategy:
@@ -755,7 +879,9 @@
         try {
           const stored = await chrome.storage.local.get(["promptScreenshotLabel"]);
           if (stored.promptScreenshotLabel) {
-            const prompted = prompt("Screenshot checkpoint label (optional):");
+            // L3: Use custom prompt dialog instead of native prompt() which is
+            // suppressed in cross-origin iframes on many modern sites.
+            const prompted = await wfPrompt("Screenshot checkpoint label (optional):");
             if (prompted === null) return;
             label = prompted.trim() || null;
           }
@@ -786,17 +912,19 @@
         chrome.runtime.sendMessage({ type: "STOP_RECORDING" }).catch(() => {});
       });
 
+    // L3: Use custom confirm dialogs — native confirm() is silently blocked in
+    // cross-origin iframes, causing DEL/RST to fail with no feedback.
     const btnDiscard = makeRadialBtn(SVG.discard, "DEL", "Discard recording",
-      q2.x, q2.y, "__wf_btn_del__", () => {
-        if (confirm("Discard this recording?")) {
+      q2.x, q2.y, "__wf_btn_del__", async () => {
+        if (await wfConfirm("Discard this recording?")) {
           closeAllDialogs();
           chrome.runtime.sendMessage({ type: "DISCARD_RECORDING" }).catch(() => {});
         }
       });
 
     const btnRestart = makeRadialBtn(SVG.restart, "RST", "Restart recording",
-      q3.x, q3.y, "__wf_btn_rst__", () => {
-        if (confirm("Restart recording? Current events will be cleared.")) {
+      q3.x, q3.y, "__wf_btn_rst__", async () => {
+        if (await wfConfirm("Restart recording? Current events will be cleared.")) {
           chrome.runtime.sendMessage({ type: "RESTART_RECORDING" }).catch(() => {});
         }
       });

@@ -16,6 +16,13 @@ const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
 
+// L2: Debug logging flag. Set to `true` during local development to enable
+// verbose diagnostic output. Must remain `false` in production — some diagnostic
+// logs expose user-sourced data (console message content, network URLs).
+const __DEBUG__ = false;
+/** @param {...any} args */
+const debug = (...args) => { if (__DEBUG__) console.warn('[WF:debug]', ...args); };
+
 const state = {
   mode: "idle",       // 'idle' | 'recording' | 'playing'
 
@@ -982,10 +989,54 @@ function handleRecordEvent(event) {
 }
 
 /**
+ * Helper to capture a screenshot without the extension's UI bleeding into it.
+ * Temporarily hides the recorder HUD, player HUD, and logs dialogs, waits for DOM paint,
+ * and restores them immediately after capturing the snapshot.
+ */
+async function captureCleanScreenshot(tab) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const overlays = [
+          document.getElementById("__workflow_rec_indicator__"),
+          document.getElementById("__workflow_player_hud__"),
+          document.getElementById("__wf_console_dialog__"),
+          document.getElementById("__wf_network_dialog__")
+        ];
+        window.__wf_hidden_overlays = overlays.map(el => el ? el.style.display : null);
+        overlays.forEach(el => { if (el) el.style.display = 'none'; });
+      }
+    });
+    // Wait for the DOM composite/paint to reflect the hidden display state
+    await new Promise(r => setTimeout(r, 60));
+  } catch (_) {}
+
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const overlays = [
+          document.getElementById("__workflow_rec_indicator__"),
+          document.getElementById("__workflow_player_hud__"),
+          document.getElementById("__wf_console_dialog__"),
+          document.getElementById("__wf_network_dialog__")
+        ];
+        overlays.forEach((el, i) => { if (el) el.style.display = window.__wf_hidden_overlays?.[i] || ''; });
+      }
+    });
+  } catch (_) {}
+
+  return dataUrl;
+}
+
+/**
  * Captures a visual checkpoint of the active tab.
  *
  * Strategy:
- * Validates the active tab, invokes `chrome.tabs.captureVisibleTab` to generate a base64 
+ * Validates the active tab, invokes `captureCleanScreenshot` to generate a base64 
  * image, and appends a specialized 'checkpoint' event to the events array. It immediately 
  * persists to storage because checkpoints are critical, high-value data points.
  *
@@ -1006,7 +1057,7 @@ async function handleAddCheckpoint(label, sendResponse) {
   }
 
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const dataUrl = await captureCleanScreenshot(tab);
     const index = state.screenshotCount++;
     state.screenshots[index] = dataUrl;
 
@@ -1860,7 +1911,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab) {
         try {
-          const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+          const dataUrl = await captureCleanScreenshot(tab);
           const idx = state.screenshotCount++;
           results.checkpoints[idx] = {
             label: event.label,
@@ -1943,7 +1994,8 @@ async function dispatchPlaybackEvent(event, results, meta) {
 
         matchedEntry = found?.[0]?.result || null;
         if (!matchedEntry) {
-          console.warn("[WFPlay] console_checkpoint not matched:", event.logMessage);
+          // L2: Gate behind __DEBUG__ — event.logMessage is user-sourced page content.
+          debug("[WFPlay] console_checkpoint not matched:", event.logMessage);
           // Soft-pass: do not fail the workflow for a missed log checkpoint —
           // take the screenshot anyway so the run has some evidence.
         }
@@ -2128,7 +2180,8 @@ async function dispatchPlaybackEvent(event, results, meta) {
           matchedCall = enriched?.[0]?.result || matchedCall;
         }
         if (!matchedCall) {
-          console.warn("[WFPlay] network_checkpoint not matched:", event.networkMethod, event.networkUrl);
+          // L2: Gate behind __DEBUG__ — event.networkUrl may contain private URLs.
+          debug("[WFPlay] network_checkpoint not matched:", event.networkMethod, event.networkUrl);
         }
       } catch (err) {
         console.warn("[WFPlay] network_checkpoint error:", err);

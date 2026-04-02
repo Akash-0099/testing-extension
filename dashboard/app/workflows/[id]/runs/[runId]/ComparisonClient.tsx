@@ -78,11 +78,23 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     (e: any) => e.type === 'checkpoint' || e.type === 'console_checkpoint' || e.type === 'network_checkpoint'
   )
 
-  const pairs = run.checkpoints.map((cp, i) => ({
-    checkpoint: cp,
-    recording: run.workflow.screenshots.find(s => s.index === cp.index) ?? run.workflow.screenshots[i] ?? null,
-    recordingEvent: recordingCheckpointEvents[cp.index] ?? recordingCheckpointEvents[i] ?? null,
-  }))
+  let screenshotCpIdx = 0
+  const pairs = run.checkpoints.map((cp, i) => {
+    let recording: RecordingScreenshot | null = null
+    const isScreenshot = cp.checkpointType !== 'console' && cp.checkpointType !== 'network'
+    
+    if (isScreenshot) {
+      recording = run.workflow.screenshots.find(s => s.index === screenshotCpIdx) ?? null
+      screenshotCpIdx++
+    }
+
+    return {
+      checkpoint: cp,
+      recording,
+      // Matches the i-th checkpoint of playback run to the i-th parsed checkpoint event from recording run
+      recordingEvent: recordingCheckpointEvents[i] ?? null,
+    }
+  })
 
   const active = pairs[activeIndex]
   const isFailed = run.status === 'failed'
@@ -347,19 +359,28 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
           </div>
         </div>
         <Link href="/" className="nav-item">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
           <span className="nav-text">All Workflows</span>
         </Link>
         <Link href="/settings" className="nav-item">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
           <span className="nav-text">Settings</span>
         </Link>
         <div className="nav-item" onClick={() => router.push(`/workflows/${workflowId}`)} style={{ cursor: 'pointer' }}>
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          </svg>
           <span className="nav-text">Workflow Detail</span>
         </div>
         <div className="nav-item active">
-          <span className="nav-icon" aria-hidden="true" />
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+          </svg>
           <span className="nav-text">Comparison</span>
         </div>
 
