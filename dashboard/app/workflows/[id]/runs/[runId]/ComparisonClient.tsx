@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface Checkpoint {
   id: string
@@ -37,15 +37,129 @@ interface Run {
   }
 }
 
+// ─── JSON diff helpers ────────────────────────────────────────────────────────
+
+type DiffLine = {
+  line: string
+  status: 'match' | 'mismatch' | 'only-left' | 'only-right'
+}
+
+type InlinePart = { text: string; highlight: boolean }
+
+/** Normalise any value to a pretty-printed JSON string (line array). */
+function toLines(value: unknown): string[] {
+  // treat null, undefined, and empty string identically — no lines
+  if (value == null || value === '') return []
+  let str: string
+  if (typeof value === 'string') {
+    try { str = JSON.stringify(JSON.parse(value), null, 2) } catch { str = value }
+  } else {
+    try { str = JSON.stringify(value, null, 2) } catch { str = String(value) }
+  }
+  // Drop a trailing empty line produced by trailing newlines
+  const lines = str.split('\n')
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return lines
+}
+
+/** Produce a side-by-side diff of two value arrays. */
+function buildDiff(left: unknown, right: unknown): { left: DiffLine[]; right: DiffLine[] } {
+  const lLines = toLines(left)
+  const rLines = toLines(right)
+  const len = Math.max(lLines.length, rLines.length)
+
+  const leftOut: DiffLine[] = []
+  const rightOut: DiffLine[] = []
+
+  for (let i = 0; i < len; i++) {
+    const l = lLines[i]
+    const r = rLines[i]
+
+    if (l === undefined) {
+      leftOut.push({ line: '', status: 'only-right' })
+      rightOut.push({ line: r, status: 'only-right' })
+    } else if (r === undefined) {
+      leftOut.push({ line: l, status: 'only-left' })
+      rightOut.push({ line: '', status: 'only-left' })
+    } else if (l === r) {
+      leftOut.push({ line: l, status: 'match' })
+      rightOut.push({ line: r, status: 'match' })
+    } else {
+      leftOut.push({ line: l, status: 'mismatch' })
+      rightOut.push({ line: r, status: 'mismatch' })
+    }
+  }
+
+  return { left: leftOut, right: rightOut }
+}
+
+/**
+ * Character-level inline diff using common-prefix / common-suffix trimming.
+ * Only the "middle" changed segment is highlighted — not the whole line.
+ */
+function getInlineParts(left: string, right: string): { leftParts: InlinePart[]; rightParts: InlinePart[] } {
+  let ps = 0
+  while (ps < left.length && ps < right.length && left[ps] === right[ps]) ps++
+
+  let ls = left.length - 1
+  let rs = right.length - 1
+  while (ls >= ps && rs >= ps && left[ls] === right[rs]) { ls--; rs-- }
+
+  const prefix = left.slice(0, ps)
+  const lMid   = left.slice(ps, ls + 1)
+  const rMid   = right.slice(ps, rs + 1)
+  const suffix  = left.slice(ls + 1) // equal suffix for both
+
+  return {
+    leftParts:  [{ text: prefix, highlight: false }, { text: lMid, highlight: lMid.length > 0 }, { text: suffix, highlight: false }],
+    rightParts: [{ text: prefix, highlight: false }, { text: rMid, highlight: rMid.length > 0 }, { text: suffix, highlight: false }],
+  }
+}
+
+function diffLineStyle(status: DiffLine['status']): React.CSSProperties {
+  switch (status) {
+    case 'mismatch':
+      // Subtle row tint — the specific chars are highlighted separately
+      return { background: 'rgba(234,179,8,0.06)', borderLeft: '3px solid #ca8a04' }
+    case 'only-left':
+      return { background: 'rgba(239,68,68,0.12)', borderLeft: '3px solid #ef4444' }
+    case 'only-right':
+      return { background: 'rgba(34,197,94,0.12)', borderLeft: '3px solid #22c55e' }
+    default:
+      return { borderLeft: '3px solid transparent' }
+  }
+}
+
+
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 /** Side-by-side recording vs playback comparison for one run, with checkpoint navigation. */
 export default function ComparisonClient({ run, workflowId }: { run: Run; workflowId: string }) {
   const router = useRouter()
   const [activeIndex, setActiveIndex] = useState(0)
   const [isMounted, setIsMounted] = useState(false)
+  const [jsonCompare, setJsonCompare] = useState(false)
+  const [navWidth, setNavWidth] = useState(240)
+  const isResizing = useRef(false)
 
   useEffect(() => {
     setIsMounted(true)
   }, [])
+
+  // ── Sidebar resize drag ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isMounted) return
+    const onMove = (e: MouseEvent) => {
+      if (!isResizing.current) return
+      const next = Math.min(400, Math.max(160, e.clientX))
+      setNavWidth(next)
+    }
+    const onUp = () => { isResizing.current = false; document.body.style.cursor = '' }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+  }, [isMounted])
 
   useEffect(() => {
     if (!isMounted) return
@@ -177,6 +291,144 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     }
   }
 
+  // ─── JSON Diff renderer ───────────────────────────────────────────────────
+
+  /** Renders a single code line with inline char-level highlights for mismatch lines. */
+  function renderInlineLine(
+    dl: DiffLine,
+    counterpartLine: string,
+    side: 'left' | 'right',
+    idx: number,
+  ) {
+    const lineNumStyle: React.CSSProperties = {
+      display: 'inline-block', minWidth: 36, textAlign: 'right',
+      paddingRight: 10, paddingLeft: 8, color: '#4b5563', userSelect: 'none', flexShrink: 0,
+    }
+
+    const rowStyle: React.CSSProperties = {
+      display: 'flex', alignItems: 'flex-start',
+      ...diffLineStyle(dl.status),
+    }
+
+    // For mismatch lines render inline char-level diff
+    if (dl.status === 'mismatch') {
+      const other = counterpartLine
+      const { leftParts, rightParts } = getInlineParts(dl.line, other)
+      const parts = side === 'left' ? leftParts : rightParts
+      return (
+        <div key={idx} style={rowStyle}>
+          <span style={lineNumStyle}>{idx + 1}</span>
+          <span style={{
+            flex: 1, paddingRight: 10, paddingTop: 1, paddingBottom: 1,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#e2e8f0',
+          }}>
+            {parts.map((p, pi) =>
+              p.highlight && p.text ? (
+                <mark key={pi} style={{
+                  background: 'rgba(234,179,8,0.35)',
+                  color: '#fde047',
+                  borderRadius: 3,
+                  padding: '0 1px',
+                  // @ts-ignore
+                  textDecoration: side === 'left' ? 'none' : 'none',
+                  boxShadow: '0 0 0 1px rgba(234,179,8,0.4)',
+                }}>{p.text}</mark>
+              ) : (
+                <span key={pi}>{p.text}</span>
+              )
+            )}
+          </span>
+        </div>
+      )
+    }
+
+    // For only-left / only-right / match: plain coloured line
+    const color = dl.status === 'only-left' ? '#fca5a5'
+                : dl.status === 'only-right' ? '#86efac'
+                : '#e2e8f0'
+    return (
+      <div key={idx} style={rowStyle}>
+        <span style={lineNumStyle}>{idx + 1}</span>
+        <span style={{
+          flex: 1, paddingRight: 10, paddingTop: 1, paddingBottom: 1,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', color,
+        }}>{dl.line || ' '}</span>
+      </div>
+    )
+  }
+
+  function renderJsonDiffBlock(title: string, leftVal: unknown, rightVal: unknown) {
+    const { left, right } = buildDiff(leftVal, rightVal)
+    const hasDiffs = left.some(l => l.status !== 'match')
+    const mismatchCount = left.filter(l => l.status !== 'match').length
+
+    const panelStyle: React.CSSProperties = {
+      fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
+      fontSize: 12, background: '#0d0d14',
+      border: '1px solid var(--border)', borderRadius: 8,
+      minHeight: 48, maxHeight: 320, overflowY: 'auto', lineHeight: 1.6,
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {title}
+          </div>
+          {hasDiffs ? (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+              background: 'rgba(234,179,8,0.15)', color: '#fde047', border: '1px solid rgba(234,179,8,0.3)',
+            }}>
+              {mismatchCount} diff{mismatchCount !== 1 ? 's' : ''}
+            </span>
+          ) : (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+              background: 'rgba(34,197,94,0.15)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)',
+            }}>
+              Identical
+            </span>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div style={{ display: 'flex', gap: 14, fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>
+          <span><span style={{ color: '#fde047', marginRight: 4 }}>●</span>Changed chars</span>
+          <span><span style={{ color: '#fca5a5', marginRight: 4 }}>●</span>Only in Expected</span>
+          <span><span style={{ color: '#86efac', marginRight: 4 }}>●</span>Only in Captured</span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+          {/* Expected (left) */}
+          <div style={panelStyle}>
+            <div style={{
+              padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+              borderBottom: '1px solid var(--border)', letterSpacing: '0.05em',
+            }}>EXPECTED</div>
+            {left.length === 0
+              ? <div style={{ padding: '10px 14px', color: 'var(--text-muted)', fontStyle: 'italic' }}>—</div>
+              : left.map((dl, idx) => renderInlineLine(dl, right[idx]?.line ?? '', 'left', idx))
+            }
+          </div>
+          {/* Captured (right) */}
+          <div style={panelStyle}>
+            <div style={{
+              padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+              borderBottom: '1px solid var(--border)', letterSpacing: '0.05em',
+            }}>CAPTURED</div>
+            {right.length === 0
+              ? <div style={{ padding: '10px 14px', color: 'var(--text-muted)', fontStyle: 'italic' }}>—</div>
+              : right.map((dl, idx) => renderInlineLine(dl, left[idx]?.line ?? '', 'right', idx))
+            }
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ─── Original helpers ─────────────────────────────────────────────────────
+
   function renderLogContext(title: string, logs: any[] | null | undefined) {
     const lines = Array.isArray(logs) ? logs.filter(Boolean) : []
     return (
@@ -202,6 +454,83 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     )
   }
 
+  // ─── JSON Compare toggle (iOS-style switch) ───────────────────────────────
+
+  function renderJsonCompareToggle(canCompare: boolean) {
+    const active = jsonCompare && canCompare
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
+        opacity: canCompare ? 1 : 0.35,
+        pointerEvents: canCompare ? 'auto' : 'none',
+      }}
+        title={canCompare ? 'Toggle inline JSON diff view' : 'Only available for Network / Console checkpoints'}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Icon */}
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ color: active ? '#a5b4fc' : '#6b7280', transition: 'color 0.2s' }}>
+            <rect x="1" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+            <rect x="10" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+            <path d="M6.5 8h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            <path d="M7.5 6.5L6 8l1.5 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M8.5 6.5L10 8l-1.5 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span style={{
+            fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+            color: active ? '#c7d2fe' : '#6b7280',
+            transition: 'color 0.2s',
+            textTransform: 'uppercase',
+            fontFamily: 'SFMono-Regular, Consolas, monospace',
+          }}>JSON Diff</span>
+          {/* Toggle pill */}
+          <button
+            id="json-compare-toggle"
+            role="switch"
+            aria-checked={active}
+            onClick={() => canCompare && setJsonCompare(v => !v)}
+            style={{
+              position: 'relative', display: 'inline-flex', alignItems: 'center',
+              width: 40, height: 22, borderRadius: 11,
+              background: active
+                ? 'linear-gradient(135deg, #6366f1, #8b5cf6)'
+                : 'rgba(255,255,255,0.07)',
+              border: `1px solid ${active ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.10)'}`,
+              cursor: 'pointer', transition: 'all 0.22s cubic-bezier(.4,0,.2,1)',
+              boxShadow: active ? '0 0 10px rgba(99,102,241,0.4)' : 'none',
+              padding: 0,
+              flexShrink: 0,
+            }}
+          >
+            {/* Thumb */}
+            <span style={{
+              position: 'absolute',
+              left: active ? 20 : 2,
+              width: 16, height: 16, borderRadius: '50%',
+              background: active ? '#fff' : '#6b7280',
+              boxShadow: active ? '0 1px 4px rgba(0,0,0,0.4)' : 'none',
+              transition: 'left 0.22s cubic-bezier(.4,0,.2,1), background 0.22s',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {active && (
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                  <path d="M1.5 4l1.5 1.5L6.5 2.5" stroke="#6366f1" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
+            </span>
+          </button>
+        </div>
+        {/* Status line under toggle */}
+        <span style={{
+          fontSize: 10, color: active ? '#818cf8' : 'transparent',
+          transition: 'color 0.2s', fontWeight: 600, letterSpacing: '0.04em',
+          fontFamily: 'SFMono-Regular, Consolas, monospace',
+        }}>char-level diff ON</span>
+      </div>
+    )
+  }
+
+  // ─── Main compare pane ────────────────────────────────────────────────────
+
   function renderComparePane() {
     if (!active) return null
     const { checkpoint: cp, recording, recordingEvent } = active
@@ -212,6 +541,22 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
       const expectedMsg: string = recordingEvent?.logMessage ?? null
       const capturedMsg: string | null = captured?.capturedMessage ?? null
       const matched: boolean = captured?.matched ?? false
+
+      if (jsonCompare) {
+        // Helper: map a context log array to a display string, returning null for empty/missing arrays
+        const ctxStr = (arr: any[] | null | undefined): string | null => {
+          if (!Array.isArray(arr) || arr.length === 0) return null
+          return arr.map((l: any) => `[${(l?.level || 'log').toUpperCase()}] ${l?.message || '—'}`).join('\n')
+        }
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {renderJsonDiffBlock('Log Message', expectedMsg, capturedMsg)}
+            {renderJsonDiffBlock('Context Before', ctxStr(captured?.expectedContextBefore), ctxStr(captured?.capturedContextBefore))}
+            {renderJsonDiffBlock('Context After',  ctxStr(captured?.expectedContextAfter),  ctxStr(captured?.capturedContextAfter))}
+          </div>
+        )
+      }
+
       return (
         <div className="compare-grid">
           <div className="compare-panel">
@@ -256,6 +601,35 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
       const capUrl: string | null = captured?.capturedUrl ?? null
       const capStatus: number | null = captured?.capturedStatus ?? null
       const matched: boolean = captured?.matched ?? false
+
+      if (jsonCompare) {
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {renderJsonDiffBlock('URL', expUrl || null, capUrl)}
+            {renderJsonDiffBlock(
+              'Request Headers',
+              captured?.expectedRequestHeaders,
+              captured?.requestHeaders,
+            )}
+            {renderJsonDiffBlock(
+              'Request Payload',
+              captured?.expectedRequestBody,
+              captured?.requestBody,
+            )}
+            {renderJsonDiffBlock(
+              'Response Headers',
+              captured?.expectedResponseHeaders,
+              captured?.responseHeaders,
+            )}
+            {renderJsonDiffBlock(
+              'Response Payload',
+              captured?.expectedResponseBody,
+              captured?.responseBody,
+            )}
+          </div>
+        )
+      }
+
       return (
         <div className="compare-grid">
           <div className="compare-panel">
@@ -347,10 +721,35 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
     )
   }
 
+  // ─── Render ───────────────────────────────────────────────────────────────
+
+  const activeType = active?.checkpoint.checkpointType ?? null
+  const canCompare = activeType === 'network' || activeType === 'console'
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
-      <nav className="sidebar">
+      <nav className="sidebar" style={{ width: navWidth, minWidth: navWidth, maxWidth: navWidth, flexShrink: 0 }}>
+        {/* Drag-resize handle on right edge */}
+        <div
+          onMouseDown={e => {
+            e.preventDefault()
+            isResizing.current = true
+            document.body.style.cursor = 'col-resize'
+          }}
+          style={{
+            position: 'absolute',
+            right: 0, top: 0, bottom: 0,
+            width: 6,
+            cursor: 'col-resize',
+            zIndex: 10,
+            background: 'transparent',
+            transition: 'background 0.15s',
+          }}
+          title="Drag to resize sidebar"
+          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(124,58,237,0.35)')}
+          onMouseLeave={e => { if (!isResizing.current) e.currentTarget.style.background = 'transparent' }}
+        />
         <div className="sidebar-logo">
           <img src="/icon.svg" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
@@ -406,11 +805,10 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
             </span>
             <span className="nav-text">{pair.checkpoint.label || `CP ${i + 1}`}</span>
           </button>
-        )})}
-      </nav>
+        )})}</nav>
 
       <main className="main">
-        <div className="page-header">
+        <div className="page-header" style={{ position: 'relative' }}>
           <div className="breadcrumb" onClick={() => router.push(`/workflows/${workflowId}`)}>
             ← Back to {run.workflow.name}
           </div>
@@ -492,9 +890,22 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
                 <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                   {active.checkpoint.label || `Checkpoint ${activeIndex + 1}`}
                 </span>
+                {jsonCompare && canCompare && (
+                  <span style={{
+                    fontSize: 11, padding: '2px 10px', borderRadius: 20,
+                    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
+                    border: '1px solid rgba(99,102,241,0.4)',
+                    fontWeight: 600,
+                  }}>
+                    ⇄ JSON Diff Mode
+                  </span>
+                )}
               </div>
 
-              {/* Type-aware comparison pane */}
+              {/* Type-aware comparison pane — with JSON Diff toggle above it, right-aligned */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 10 }}>
+                {renderJsonCompareToggle(canCompare)}
+              </div>
               {renderComparePane()}
 
               {/* Summary / nav bar */}
