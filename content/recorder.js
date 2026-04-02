@@ -723,7 +723,15 @@
       btn.className = "__wf_radial_btn__ " + (themeClass || "");
       btn.style.left = `${rx}px`;
       btn.style.top  = `${ry}px`;
-      btn.innerHTML = `${svgIcon}<span class="__wf_btn_label__">${acronym}</span>`;
+      // H3: Build with DOM APIs. svgIcon is a trusted hardcoded constant so a temp
+      // div parse is safe. acronym is always a literal string ("CP", "NET", etc.).
+      const tmpDiv = document.createElement("div");
+      tmpDiv.innerHTML = svgIcon; // trusted static SVG constant — safe
+      while (tmpDiv.firstChild) btn.appendChild(tmpDiv.firstChild);
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "__wf_btn_label__";
+      labelSpan.textContent = acronym;
+      btn.appendChild(labelSpan);
       btn.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
       return btn;
     }
@@ -968,6 +976,9 @@
    */
   window.addEventListener("message", (e) => {
     if (!isRecording) return;
+    // M3: Only accept messages from the same origin (MAIN-world interceptor on same page).
+    // Prevents cross-origin iframes or pages from injecting fake recording events.
+    if (e.origin !== window.location.origin) return;
     if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
 
     try {

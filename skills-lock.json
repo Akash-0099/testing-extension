@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "extension-analyze": {
+      "source": "quangpl/browser-extension-skills",
+      "sourceType": "github",
+      "computedHash": "206f2d80185294d5ebef49998795a360ac3423ce8dc938f6ec44b81668c951ac"
+    },
     "neon-postgres": {
       "source": "neondatabase/agent-skills",
       "sourceType": "github",

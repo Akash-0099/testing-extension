@@ -38,15 +38,15 @@
     if (generation !== window.__wfConsoleGeneration) return;
     window.__wfConsoleLogs.push(entry);
     if (window.__wfConsoleLogs.length > MAX_LOGS) window.__wfConsoleLogs.shift();
-    // postMessage → crosses to ISOLATED world (logs-dialog.js)
-    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "console_log", ...entry }, "*");
+    // M3: Use same-origin target instead of "*" to prevent eavesdropping.
+    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "console_log", ...entry }, window.location.origin || "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
     window.dispatchEvent(new CustomEvent("__wf_console_log__", { detail: entry }));
   }
 
   function pushNet(entry) {
-    // postMessage → crosses to the isolated world scripts
-    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, "*");
+    // M3: Use same-origin target instead of "*" to prevent eavesdropping.
+    window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, window.location.origin || "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
     window.dispatchEvent(new CustomEvent("__wf_network_call__", { detail: entry }));
   }
@@ -54,7 +54,10 @@
   // ─── Clear commands from isolated world (logs-dialog.js clear button) ────────
   // The dialog runs in the ISOLATED world and cannot directly assign to MAIN world
   // variables, so it sends a postMessage that we receive here and act on.
+  // M3: Validate sender origin — only accept messages posted by the same page
+  // (isolated-world content scripts on the same frame share window.location.origin).
   window.addEventListener("message", (e) => {
+    if (e.origin !== window.location.origin) return;
     if (!e.data || e.data.__wfSrc !== "__wf_dialog__") return;
     if (e.data.type === "clear_console") {
       window.__wfConsoleGeneration += 1;
@@ -65,7 +68,8 @@
         type: "console_snapshot",
         requestId: e.data.requestId,
         items: (window.__wfConsoleLogs || []).slice(),
-      }, "*");
+      // M3: Target same origin instead of "*" to prevent cross-origin interception.
+      }, window.location.origin || "*");
     }
   });
 

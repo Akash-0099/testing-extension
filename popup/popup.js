@@ -1114,7 +1114,11 @@ function addThumbnail(container, dataUrl, label, index) {
   item.addEventListener("click", () => {
     const win = window.open();
     if (win) {
-      win.document.write(`<img src="${dataUrl}" style="max-width:100%;display:block;" />`);
+      // H1: Use DOM API instead of document.write to avoid policy issues and XSS risk.
+      const img = win.document.createElement("img");
+      img.src = dataUrl;
+      img.style.cssText = "max-width:100%;display:block;";
+      win.document.body.appendChild(img);
     }
   });
 

@@ -242,7 +242,12 @@
       gap: 8px;
       animation: __wf_flash__ 1.2s ease-out forwards;
     `;
-    badge.innerHTML = `<span style="color:#ef4345;font-size:16px;font-weight:700;">CP</span> ${label || "Checkpoint"}`;
+    badge.innerHTML = '';
+    const cpTag = document.createElement('span');
+    cpTag.style.cssText = 'color:#ef4345;font-size:16px;font-weight:700;';
+    cpTag.textContent = 'CP';
+    badge.appendChild(cpTag);
+    badge.appendChild(document.createTextNode(' ' + (label || 'Checkpoint')));
     document.body.appendChild(badge);
     setTimeout(() => badge.remove(), 1200);
   }
@@ -282,15 +287,30 @@
       line-height: 1.4;
     `;
 
-    // Animated dots
-    const dots = `<span style="display:inline-flex;gap:2px;vertical-align:middle;">
-      <span style="animation:__wf_waiting_dots__ 1.2s 0.0s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
-      <span style="animation:__wf_waiting_dots__ 1.2s 0.2s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
-      <span style="animation:__wf_waiting_dots__ 1.2s 0.4s infinite both;width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;"></span>
-    </span>`;
+
 
     const truncDetail = detail ? detail.slice(0, 60) + (detail.length > 60 ? "…" : "") : "";
-    row.innerHTML = `<span style="font-weight:700;">${icon} Waiting${dots}</span><div style="margin-top:3px;opacity:0.8;font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${truncDetail}</div>`;
+    // Build waiting row with DOM APIs (truncDetail is user-controlled data from workflow files)
+    const waitHeading = document.createElement('span');
+    waitHeading.style.fontWeight = '700';
+    waitHeading.textContent = `${icon} Waiting`;
+    // Animated dots — hardcoded HTML, safe to inject
+    const dotsWrap = document.createElement('span');
+    dotsWrap.style.cssText = 'display:inline-flex;gap:2px;vertical-align:middle;';
+    const dotStyle = 'width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;';
+    [[0.0],[0.2],[0.4]].forEach(([delay]) => {
+      const d = document.createElement('span');
+      d.style.cssText = dotStyle + `animation:__wf_waiting_dots__ 1.2s ${delay}s infinite both;`;
+      dotsWrap.appendChild(d);
+    });
+    waitHeading.appendChild(dotsWrap);
+    row.appendChild(waitHeading);
+    if (truncDetail) {
+      const detailEl = document.createElement('div');
+      detailEl.style.cssText = 'margin-top:3px;opacity:0.8;font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      detailEl.textContent = truncDetail;
+      row.appendChild(detailEl);
+    }
 
     // Insert before the stop button so it stays above it
     const stopBtn = document.getElementById("__wf_stop_btn__");

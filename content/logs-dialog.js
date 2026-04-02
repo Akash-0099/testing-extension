@@ -140,6 +140,8 @@
       }, timeoutMs);
 
       function onMessage(event) {
+        // M3: Only accept same-origin messages from the MAIN-world interceptor.
+        if (event.origin !== window.location.origin) return;
         if (!event.data || event.data.__wfSrc !== "__wf_interceptor__") return;
         if (event.data.type !== "console_snapshot" || event.data.requestId !== requestId) return;
         window.clearTimeout(timer);
@@ -148,7 +150,8 @@
       }
 
       window.addEventListener("message", onMessage);
-      window.postMessage({ __wfSrc: "__wf_dialog__", type: "snapshot_console", requestId }, "*");
+      // M3: Target same origin instead of "*".
+      window.postMessage({ __wfSrc: "__wf_dialog__", type: "snapshot_console", requestId }, window.location.origin || "*");
     });
   }
 
@@ -334,7 +337,9 @@
       // Clear the MAIN world in-page buffer via postMessage (isolated world cannot
       // directly assign to MAIN world variables — postMessage crosses the boundary).
       const clearType = type === "console" ? "clear_console" : "clear_network";
-      window.postMessage({ __wfSrc: "__wf_dialog__", type: clearType }, "*");
+      // M3: Target same origin instead of "*" to prevent cross-origin pages from
+      // intercepting the clear command intended for the MAIN-world interceptor.
+      window.postMessage({ __wfSrc: "__wf_dialog__", type: clearType }, window.location.origin || "*");
       try {
         const action = type === "console" ? "CLEAR_CONSOLE_LOGS" : "CLEAR_NETWORK_CALLS";
         chrome.runtime.sendMessage({ type: action }).catch(() => {});

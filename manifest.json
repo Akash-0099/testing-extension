@@ -12,15 +12,10 @@
     "webNavigation",
     "webRequest"
   ],
-  "host_permissions": [
-    "<all_urls>",
-    "*://*/*",
-    "http://*/*",
-    "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*",
-    "http://localhost:3000/*"
-  ],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
@@ -41,18 +36,13 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "<all_urls>",
-        "*://*/*",
-        "http://*/*",
-        "https://*/*"
-      ],
+      "matches": ["<all_urls>"],
       "js": ["content/recorder.js", "content/player.js", "content/logs-dialog.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["<all_urls>", "*://*/*"],
+      "matches": ["<all_urls>"],
       "js": ["content/page-interceptor.js", "content/playback-capture.js"],
       "run_at": "document_start",
       "world": "MAIN",
@@ -62,10 +52,7 @@
   "web_accessible_resources": [
     {
       "resources": ["content/playback-capture.js", "content/page-interceptor.js"],
-      "matches": [
-        "<all_urls>",
-        "*://*/*"
-      ]
+      "matches": ["chrome-extension://*/*"]
     }
   ]
 }

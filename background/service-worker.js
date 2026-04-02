@@ -637,6 +637,10 @@ function enqueueRecordingMutation(task) {
  * explicitly awaits `readyPromise` first to guarantee state stability before processing.
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // H4 — Security guard: reject messages from any external extension or source.
+  // All legitimate senders (popup, content scripts) share this extension's ID.
+  if (sender.id && sender.id !== chrome.runtime.id) return false;
+
   switch (msg.type) {
     case "START_RECORDING":
       enqueueRecordingMutation(() => handleStartRecording(msg, sendResponse));
