@@ -14,6 +14,7 @@ interface UserSettingsDoc {
   userId: string
   playBufferSeconds: number
   promptScreenshotLabel: boolean
+  networkMergeWindowMs: number
   createdAt: Date
   updatedAt: Date
 }
@@ -68,6 +69,7 @@ export interface UserRecord {
 export interface UserSettingsRecord {
   playBufferSeconds: number
   promptScreenshotLabel: boolean
+  networkMergeWindowMs: number
 }
 
 export interface WorkflowSummary {
@@ -176,6 +178,7 @@ interface CreateRunInput {
 export const DEFAULT_USER_SETTINGS: UserSettingsRecord = {
   playBufferSeconds: 8,
   promptScreenshotLabel: false,
+  networkMergeWindowMs: 500,
 }
 
 function iso(value: Date) {
@@ -229,6 +232,19 @@ function normalizePlayBufferSeconds(value: unknown) {
   return Math.min(60, Math.max(0, Math.trunc(parsed)))
 }
 
+function normalizeNetworkMergeWindowMs(value: unknown) {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? DEFAULT_USER_SETTINGS.networkMergeWindowMs), 10)
+
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_USER_SETTINGS.networkMergeWindowMs
+  }
+
+  return Math.min(2000, Math.max(100, Math.trunc(parsed)))
+}
+
 function mapUserSettings(doc: UserSettingsDoc | null | undefined): UserSettingsRecord {
   if (!doc) {
     return { ...DEFAULT_USER_SETTINGS }
@@ -237,6 +253,7 @@ function mapUserSettings(doc: UserSettingsDoc | null | undefined): UserSettingsR
   return {
     playBufferSeconds: normalizePlayBufferSeconds(doc.playBufferSeconds),
     promptScreenshotLabel: Boolean(doc.promptScreenshotLabel),
+    networkMergeWindowMs: normalizeNetworkMergeWindowMs(doc.networkMergeWindowMs),
   }
 }
 
@@ -329,6 +346,10 @@ export async function upsertUserSettings(
       input.promptScreenshotLabel === undefined
         ? current.promptScreenshotLabel
         : Boolean(input.promptScreenshotLabel),
+    networkMergeWindowMs:
+      input.networkMergeWindowMs === undefined
+        ? current.networkMergeWindowMs
+        : normalizeNetworkMergeWindowMs(input.networkMergeWindowMs),
   }
   const now = new Date()
 
@@ -338,6 +359,7 @@ export async function upsertUserSettings(
       $set: {
         playBufferSeconds: nextSettings.playBufferSeconds,
         promptScreenshotLabel: nextSettings.promptScreenshotLabel,
+        networkMergeWindowMs: nextSettings.networkMergeWindowMs,
         updatedAt: now,
       },
       $setOnInsert: {

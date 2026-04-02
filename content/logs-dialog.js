@@ -16,6 +16,26 @@
   if (window.__workflowLogsDialogLoaded) return;
   window.__workflowLogsDialogLoaded = true;
 
+  const DEFAULT_NETWORK_MERGE_WINDOW_MS = 500;
+  let networkMergeWindowMs = DEFAULT_NETWORK_MERGE_WINDOW_MS;
+
+  function normalizeNetworkMergeWindowMs(value) {
+    const parsed = Number.parseInt(String(value ?? DEFAULT_NETWORK_MERGE_WINDOW_MS), 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_NETWORK_MERGE_WINDOW_MS;
+    return Math.min(2000, Math.max(100, parsed));
+  }
+
+  async function hydrateNetworkMergeWindowMs() {
+    try {
+      const stored = await chrome.storage.local.get(["networkMergeWindowMs"]);
+      networkMergeWindowMs = normalizeNetworkMergeWindowMs(stored.networkMergeWindowMs);
+    } catch (_) {
+      networkMergeWindowMs = DEFAULT_NETWORK_MERGE_WINDOW_MS;
+    }
+  }
+
+  hydrateNetworkMergeWindowMs();
+
   const DIALOGS = {
     console: { id: "__wf_console_dialog__", title: "Console Logs", items: [], selected: null },
     network: { id: "__wf_network_dialog__", title: "Network Calls", items: [], selected: null }
@@ -49,7 +69,7 @@
     return score;
   }
 
-  function canMergeNetworkItems(a, b, windowMs = 1500) {
+  function canMergeNetworkItems(a, b, windowMs = networkMergeWindowMs) {
     if (!a || !b) return false;
     if ((a.url || null) !== (b.url || null)) return false;
     if ((a.method || "GET") !== (b.method || "GET")) return false;
@@ -910,5 +930,12 @@
     }
     return false;
   });
+
+  try {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local" || !changes.networkMergeWindowMs) return;
+      networkMergeWindowMs = normalizeNetworkMergeWindowMs(changes.networkMergeWindowMs.newValue);
+    });
+  } catch (_) {}
 
 })();

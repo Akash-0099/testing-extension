@@ -6,10 +6,11 @@
 // Dashboard URL — keep in sync with service-worker.js
 const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_STORAGE_KEYS = ['dashboardAuthToken', 'dashboardAuthUserId', 'dashboardAuthEmail'];
-const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel'];
+const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs'];
 const DEFAULT_USER_SETTINGS = {
   playBufferSeconds: 8,
   promptScreenshotLabel: false,
+  networkMergeWindowMs: 500,
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ const btnOpenSettings   = document.getElementById("btnOpenSettings");
 const loadedWorkflowName = document.getElementById("loadedWorkflowName");
 const btnPlay           = document.getElementById("btnPlay");
 const playBufferSeconds = document.getElementById("playBufferSeconds");
+const networkMergeWindowMs = document.getElementById("networkMergeWindowMs");
 const promptScreenshotLabelToggle = document.getElementById("promptScreenshotLabelToggle");
 const authSignedOut     = document.getElementById("authSignedOut");
 const authSignedIn      = document.getElementById("authSignedIn");
@@ -181,10 +183,19 @@ function normalizePlayBufferSeconds(value) {
   return Math.min(60, Math.max(0, parsed));
 }
 
+function normalizeNetworkMergeWindowMs(value) {
+  const parsed = Number.parseInt(String(value ?? DEFAULT_USER_SETTINGS.networkMergeWindowMs), 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_USER_SETTINGS.networkMergeWindowMs;
+  }
+  return Math.min(2000, Math.max(100, parsed));
+}
+
 function normalizeUserSettings(input = {}) {
   return {
     playBufferSeconds: normalizePlayBufferSeconds(input.playBufferSeconds),
     promptScreenshotLabel: Boolean(input.promptScreenshotLabel),
+    networkMergeWindowMs: normalizeNetworkMergeWindowMs(input.networkMergeWindowMs),
   };
 }
 
@@ -194,6 +205,7 @@ function applyUserSettings(nextSettings = {}) {
     ...nextSettings,
   });
   playBufferSeconds.value = String(userSettings.playBufferSeconds);
+  networkMergeWindowMs.value = String(userSettings.networkMergeWindowMs);
   promptScreenshotLabelToggle.checked = userSettings.promptScreenshotLabel;
   renderCheckpointLabelMode();
   return userSettings;
@@ -204,6 +216,7 @@ async function persistUserSettingsLocally(nextSettings = {}) {
   await storageSet({
     playBufferSeconds: resolvedSettings.playBufferSeconds,
     promptScreenshotLabel: resolvedSettings.promptScreenshotLabel,
+    networkMergeWindowMs: resolvedSettings.networkMergeWindowMs,
   });
   return resolvedSettings;
 }
@@ -275,8 +288,15 @@ async function handlePromptScreenshotSettingChange() {
   });
 }
 
+async function handleNetworkMergeWindowSettingsChange() {
+  await saveUserSettings({
+    networkMergeWindowMs: networkMergeWindowMs.value,
+  });
+}
+
 playBufferSeconds.addEventListener('change', handlePlayBufferSettingsChange);
 promptScreenshotLabelToggle.addEventListener('change', handlePromptScreenshotSettingChange);
+networkMergeWindowMs.addEventListener('change', handleNetworkMergeWindowSettingsChange);
 
 function setAuthMode(mode) {
   authMode = mode;

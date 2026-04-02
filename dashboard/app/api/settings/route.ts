@@ -13,6 +13,17 @@ function parsePlayBufferSeconds(value: unknown) {
   return Math.min(60, Math.max(0, Math.trunc(parsed)))
 }
 
+function parseNetworkMergeWindowMs(value: unknown) {
+  const parsed =
+    typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Network merge window must be a whole number between 100 and 2000 ms.')
+  }
+
+  return Math.min(2000, Math.max(100, Math.trunc(parsed)))
+}
+
 export async function GET(req: NextRequest) {
   const session = await getRequestSession(req)
   if (!session) {
@@ -46,6 +57,10 @@ export async function PUT(req: NextRequest) {
         body.promptScreenshotLabel === undefined
           ? undefined
           : Boolean(body.promptScreenshotLabel),
+      networkMergeWindowMs:
+        body.networkMergeWindowMs === undefined
+          ? undefined
+          : parseNetworkMergeWindowMs(body.networkMergeWindowMs),
     })
 
     return NextResponse.json({ settings })

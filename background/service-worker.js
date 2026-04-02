@@ -15,6 +15,7 @@
 const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
+const DEFAULT_NETWORK_MERGE_WINDOW_MS = 500;
 
 // L2: Debug logging flag. Set to `true` during local development to enable
 // verbose diagnostic output. Must remain `false` in production — some diagnostic
@@ -39,6 +40,7 @@ const state = {
   consoleLogs: {},    // { [tabId]: [{ message, timestamp, url }] }
   networkCalls: {},   // { [tabId]: [{ url, method, status, timestamp }] }
   networkClearCutoffs: {},
+  networkMergeWindowMs: DEFAULT_NETWORK_MERGE_WINDOW_MS,
   dialogState: { consoleOpen: false, networkOpen: false },
 
   // Playing
@@ -52,6 +54,12 @@ const RECORDING_DB_NAME = "workflow-recorder-db";
 const RECORDING_DB_VERSION = 1;
 const RECORDING_STORE_NAME = "recording_state";
 const ACTIVE_RECORDING_KEY = "active_recording";
+
+function normalizeNetworkMergeWindowMs(value) {
+  const parsed = Number.parseInt(String(value ?? DEFAULT_NETWORK_MERGE_WINDOW_MS), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_NETWORK_MERGE_WINDOW_MS;
+  return Math.min(2000, Math.max(100, parsed));
+}
 
 function getNetworkClearCutoff(tabId) {
   if (!tabId) return 0;
@@ -215,7 +223,7 @@ function networkFieldCount(call) {
   return score;
 }
 
-function canMergeNetworkCalls(a, b, windowMs = 1500) {
+function canMergeNetworkCalls(a, b, windowMs = DEFAULT_NETWORK_MERGE_WINDOW_MS) {
   if (!a || !b) return false;
   if ((a.url || null) !== (b.url || null)) return false;
   if ((a.method || "GET") !== (b.method || "GET")) return false;
@@ -253,7 +261,7 @@ function upsertRecordedNetworkCall(tabId, call) {
   let bestScore = -1;
 
   for (let i = calls.length - 1; i >= 0; i--) {
-    if (!canMergeNetworkCalls(calls[i], call)) continue;
+    if (!canMergeNetworkCalls(calls[i], call, state.networkMergeWindowMs)) continue;
     const score = networkFieldCount(calls[i]);
     if (score > bestScore) {
       bestScore = score;
@@ -575,7 +583,7 @@ function enqueueRecordingMutation(task) {
 
 (async () => {
   try {
-    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount"]);
+    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount", "networkMergeWindowMs"]);
     if (stored.wfMode === "recording") {
       state.mode = "recording";
       state.events = stored.wfEvents || [];
@@ -583,6 +591,7 @@ function enqueueRecordingMutation(task) {
       state.recordingSessionId = stored.wfRecordingSessionId || null;
       state.screenshotCount = stored.wfScreenshotCount || 0;
     }
+    state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(stored.networkMergeWindowMs);
   } catch (_) {}
 
   try {
@@ -631,6 +640,14 @@ function enqueueRecordingMutation(task) {
 
   _readyResolve();
 })();
+
+try {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    if (!changes.networkMergeWindowMs) return;
+    state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(changes.networkMergeWindowMs.newValue);
+  });
+} catch (_) {}
 
 // ─── Message routing ──────────────────────────────────────────────────────────
 

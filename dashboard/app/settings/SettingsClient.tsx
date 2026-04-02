@@ -16,6 +16,9 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
   const [playBufferSeconds, setPlayBufferSeconds] = useState(
     String(initialSettings.playBufferSeconds)
   )
+  const [networkMergeWindowMs, setNetworkMergeWindowMs] = useState(
+    String(initialSettings.networkMergeWindowMs)
+  )
   const [promptScreenshotLabel, setPromptScreenshotLabel] = useState(
     initialSettings.promptScreenshotLabel
   )
@@ -44,6 +47,19 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
       return
     }
 
+    const parsedNetworkMergeWindow = Number.parseInt(networkMergeWindowMs, 10)
+    if (
+      !Number.isFinite(parsedNetworkMergeWindow) ||
+      parsedNetworkMergeWindow < 100 ||
+      parsedNetworkMergeWindow > 2000
+    ) {
+      setFeedback({
+        type: 'error',
+        message: 'Network merge window must be a whole number between 100 and 2000 ms.',
+      })
+      return
+    }
+
     setSaving(true)
     try {
       const res = await fetch('/api/settings', {
@@ -52,6 +68,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
         body: JSON.stringify({
           playBufferSeconds: parsedBuffer,
           promptScreenshotLabel,
+          networkMergeWindowMs: parsedNetworkMergeWindow,
         }),
       })
       const data = await res.json()
@@ -62,6 +79,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
 
       setPlayBufferSeconds(String(data.settings.playBufferSeconds))
       setPromptScreenshotLabel(Boolean(data.settings.promptScreenshotLabel))
+      setNetworkMergeWindowMs(String(data.settings.networkMergeWindowMs))
       setFeedback({
         type: 'success',
         message: 'Settings saved. The extension will use them the next time the popup opens.',
@@ -157,6 +175,24 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
               />
               <div className="form-hint" style={{ textAlign: 'left', marginTop: 4 }}>
                 Extra wait time before playback continues after page loads.
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="settings-network-merge-window">
+                Network Merge Window (ms)
+              </label>
+              <input
+                id="settings-network-merge-window"
+                type="number"
+                min={100}
+                max={2000}
+                className="form-input"
+                value={networkMergeWindowMs}
+                onChange={(event) => setNetworkMergeWindowMs(event.target.value)}
+              />
+              <div className="form-hint" style={{ textAlign: 'left', marginTop: 4 }}>
+                Requests with the same URL and method inside this time window may be merged.
               </div>
             </div>
 
